@@ -14,6 +14,7 @@ graph TB
         MA[Mobile App<br/>Flutter<br/>iOS & Android]
         WA[Admin Web App<br/>React<br/>Field Owner Portal]
         CA[Customer Web App<br/>React<br/>Booking Portal]
+        PWA[Progressive Web Application<br/>JavaScript/ TypeScript<br/>Replace MA and CA]
     end
     
     subgraph "Ingress Layer"
@@ -23,6 +24,7 @@ graph TB
     subgraph "Application Layer - DigitalOcean Kubernetes (DOKS)"
         PS[Platform Service<br/>Spring Boot<br/>Auth, Users, Fields]
         TS[Transaction Service<br/>Spring Boot<br/>Bookings, Payments]
+        NCS[Notification Center Service <br/>Spring Boot<br/>Notifications]
         KAFKA[Kafka Cluster<br/>Strimzi Operator<br/>Event Streaming]
     end
     
@@ -36,6 +38,7 @@ graph TB
         STRIPE[Stripe API<br/>Payment Processing]
         OAUTH[OAuth Providers<br/>Google, Facebook<br/>Apple ID]
         EMAIL[SendGrid<br/>Email Notifications<br/>100 free/day]
+        WPROVIDER[Weather Provider<br/>Open-Meteo, OpenWeatherMap<br/>Free, 1k free/day]
     end
     
     subgraph "Observability Stack - On Kubernetes"
@@ -68,6 +71,7 @@ graph TB
     PS --> KAFKA
     PS --> SPACES
     PS --> OAUTH
+    PS --> WPROVIDER
     
     TS --> DOPG
     TS --> DOREDIS
@@ -82,6 +86,9 @@ graph TB
     PS --> LOKI
     TS --> LOKI
     
+    NCS --> MA
+    NCS --> CA
+    
     PROM --> GRAF
     
     TF -.->|Provisions| DOPG
@@ -92,6 +99,7 @@ graph TB
     GHA -.->|Builds & Pushes| DOREG
     GHA -.->|Deploys| PS
     GHA -.->|Deploys| TS
+    GHA -.->|Deploys| NCS
     
     COMPOSE -.->|Local Dev| PS
     COMPOSE -.->|Local Dev| TS
@@ -99,15 +107,19 @@ graph TB
     IDE -.->|Debug & Connect| DOREDIS
 ```
 
+
 ### Service Responsibilities
 
 **Platform Service (Spring Boot)**
 - User authentication and authorization (OAuth integration with biometric support)
 - User registration with terms and conditions
+- Keep the user equipment registration id and associate that with customer ID
 - Court registration, management, and deletion
 - Court type configuration (duration, capacity, sport type)
 - Geospatial queries for court discovery
 - Availability management and caching
+- Weather forecast for specific datetime and location, calling the external weather API
+- Publish an event to the Kafka topic for when a scheduled event will take place few hours earlier
 - Manual booking creation for court owners
 - Analytics and revenue reporting
 - Database schema management (Flyway migrations)
@@ -121,6 +133,12 @@ graph TB
 - Notification publishing and delivery
 - Booking history and audit trails
 - Revenue split calculations
+- Publish event to the Kafka topic for the transactions
+
+**Notification Center (Spring Boot)**
+- Listen to the Kafka topics that Platform and Transaction Services publishes events
+- Send push notifications for the events to the user equipment (customer ID - registrationID)
+- Ideally web-socket connection must be setup to send web-socket notifications
 
 ### DigitalOcean Infrastructure Resources
 
@@ -240,7 +258,9 @@ graph TD
     AUTH -->|Yes| DATETIME[Date & Time Selection<br/>Pick date and time range]
     LOGIN --> DATETIME
     
-    DATETIME --> MAP[Map View with Court Markers<br/>Tabs: Tennis Padel Basketball Football]
+    DATETIME --> MAP[Map View with Court Markers<br/>Tabs: Tennis Padel Basketball Football<br/>Check Weather Forecast]
+    
+    MAP --> DATETIME
     
     MAP --> FILTER[User Selects Court Type Tab<br/>Map filters to show only selected type]
     
