@@ -4,6 +4,227 @@
 
 A comprehensive field booking platform that enables field owners to register and manage sports facilities (tennis, padel, 5x5 football) while allowing customers to discover, book, and pay for field reservations through mobile and web applications. The system implements a microservices architecture with real-time capabilities, geospatial queries, and robust payment processing.
 
+## System Architecture Overview
+
+### High-Level Architecture
+
+```mermaid
+graph TB
+    subgraph "Client Layer"
+        MA[Mobile App<br/>Flutter<br/>iOS & Android]
+        WA[Admin Web App<br/>React<br/>Field Owner Portal]
+        CA[Customer Web App<br/>React<br/>Booking Portal]
+    end
+    
+    subgraph "Ingress Layer"
+        LB[DigitalOcean Load Balancer<br/>NGINX Ingress Controller<br/>SSL Termination]
+    end
+    
+    subgraph "Application Layer - DigitalOcean Kubernetes (DOKS)"
+        PS[Platform Service<br/>Spring Boot<br/>Auth, Users, Fields]
+        TS[Transaction Service<br/>Spring Boot<br/>Bookings, Payments]
+        KAFKA[Kafka Cluster<br/>Strimzi Operator<br/>Event Streaming]
+    end
+    
+    subgraph "Data Layer - Managed Services"
+        DOPG[(Managed PostgreSQL<br/>with PostGIS<br/>Primary Database)]
+        DOREDIS[(Managed Redis<br/>Caching Layer)]
+        SPACES[Spaces<br/>S3-Compatible<br/>Field Images & Assets]
+    end
+    
+    subgraph "External Services"
+        STRIPE[Stripe API<br/>Payment Processing]
+        OAUTH[OAuth Providers<br/>Google, Facebook<br/>Apple ID]
+        EMAIL[SendGrid<br/>Email Notifications<br/>100 free/day]
+    end
+    
+    subgraph "Observability Stack - On Kubernetes"
+        PROM[Prometheus<br/>Metrics Collection]
+        GRAF[Grafana<br/>Dashboards & Alerts]
+        JAEGER[Jaeger<br/>Distributed Tracing]
+        LOKI[Loki<br/>Log Aggregation]
+    end
+    
+    subgraph "DevOps & Infrastructure"
+        TF[Terraform<br/>DigitalOcean<br/>Infrastructure]
+        GHA[GitHub Actions<br/>CI/CD Pipeline<br/>Automated Deployment]
+        DOREG[DO Container Registry<br/>Docker Images]
+    end
+    
+    subgraph "Local Development Environment"
+        COMPOSE[Docker Compose<br/>Local Services<br/>PostgreSQL, Redis, Kafka]
+        IDE[IDE Debugging<br/>IntelliJ / VS Code<br/>Remote Cloud Resources]
+    end
+    
+    MA --> LB
+    WA --> LB
+    CA --> LB
+    
+    LB --> PS
+    LB --> TS
+    
+    PS --> DOPG
+    PS --> DOREDIS
+    PS --> KAFKA
+    PS --> SPACES
+    PS --> OAUTH
+    
+    TS --> DOPG
+    TS --> DOREDIS
+    TS --> KAFKA
+    TS --> STRIPE
+    TS --> EMAIL
+    
+    PS --> PROM
+    TS --> PROM
+    PS --> JAEGER
+    TS --> JAEGER
+    PS --> LOKI
+    TS --> LOKI
+    
+    PROM --> GRAF
+    
+    TF -.->|Provisions| DOPG
+    TF -.->|Provisions| DOREDIS
+    TF -.->|Provisions| SPACES
+    TF -.->|Provisions| LB
+    
+    GHA -.->|Builds & Pushes| DOREG
+    GHA -.->|Deploys| PS
+    GHA -.->|Deploys| TS
+    
+    COMPOSE -.->|Local Dev| PS
+    COMPOSE -.->|Local Dev| TS
+    IDE -.->|Debug & Connect| DOPG
+    IDE -.->|Debug & Connect| DOREDIS
+```
+
+### Service Responsibilities
+
+**Platform Service (Spring Boot)**
+- User authentication and authorization (OAuth integration)
+- User registration with terms and conditions
+- Field registration, management, and deletion
+- Geospatial queries for field discovery
+- Availability management and caching
+- Manual booking creation for field owners
+- Analytics and revenue reporting
+- Database schema management (Flyway migrations)
+
+**Transaction Service (Spring Boot)**
+- Customer booking creation and management
+- Pending confirmation workflow
+- Payment processing (Stripe integration)
+- Booking modifications and cancellations
+- Refund processing and tracking
+- Notification publishing and delivery
+- Booking history and audit trails
+- Revenue split calculations
+
+### DigitalOcean Infrastructure Resources
+
+**Compute Resources**
+- **DOKS (Kubernetes)**: Managed Kubernetes cluster in Frankfurt (FRA1) region
+- **Worker Nodes**: 2x 4GB RAM droplets with auto-scaling (2-5 nodes)
+- **NGINX Ingress Controller**: Path-based routing, SSL termination, rate limiting
+
+**Data Storage**
+- **Managed PostgreSQL with PostGIS**: 1GB RAM instance with automatic backups
+- **Managed Redis**: 1GB RAM instance with automatic failover
+- **Spaces**: S3-compatible object storage with integrated CDN (250GB included)
+- **Container Registry**: Private Docker image storage (5GB included)
+
+**Networking & Security**
+- **Load Balancer**: Automatic SSL/TLS with Let's Encrypt certificates
+- **VPC**: Private networking between services
+- **Firewall Rules**: Kubernetes network policies for service isolation
+- **Kubernetes Secrets**: Encrypted secrets management with External Secrets Operator support
+
+**Observability & Monitoring**
+- **Prometheus**: Metrics collection and storage (self-hosted on Kubernetes)
+- **Grafana**: Visualization dashboards and alerting (self-hosted on Kubernetes)
+- **Jaeger**: Distributed tracing across microservices (self-hosted on Kubernetes)
+- **Loki**: Log aggregation and indexing (self-hosted on Kubernetes)
+- **DigitalOcean Monitoring**: Built-in infrastructure metrics
+
+**DevOps & Deployment**
+- **Terraform**: Infrastructure as Code for DigitalOcean resource provisioning
+- **GitHub Actions**: CI/CD pipeline with automated testing and deployment
+- **Container Registry**: Private Docker registry integrated with DOKS
+- **doctl CLI**: Command-line tool for DigitalOcean automation
+
+**Local Development Environment**
+- **Docker Compose**: Local infrastructure (PostgreSQL, Redis, Kafka) for development
+- **Profile-based Configuration**: Spring profiles for local/dev/prod environments
+- **Remote Debugging**: IDE integration with cloud-hosted managed services
+- **Hot Reload**: Spring Boot DevTools for rapid local development
+
+### Communication Patterns
+
+**Synchronous (REST APIs)**
+- Client applications → Platform Service (authentication, field queries)
+- Client applications → Transaction Service (booking operations)
+- Transaction Service → Platform Service (field validation)
+- Transaction Service → Stripe (payment processing)
+- Platform Service → OAuth Providers (authentication)
+
+**Asynchronous (Kafka Events)**
+- Booking events: Transaction Service → Platform Service (cache updates)
+- Notification events: Transaction Service → Email Service
+- Analytics events: Both services → Analytics processors
+- Confirmation reminders: Transaction Service → Field owners
+
+**Real-time (WebSocket)**
+- Availability updates: Platform Service → Connected clients
+- Booking status changes: Transaction Service → Field owners and customers
+
+### Local Development Setup
+
+**Docker Compose for Local Infrastructure:**
+```yaml
+# docker-compose.yml - Run locally for development
+services:
+  postgres:
+    image: postgis/postgis:15-3.3
+    ports: ["5432:5432"]
+    environment:
+      POSTGRES_DB: fieldbooking
+      POSTGRES_USER: dev
+      POSTGRES_PASSWORD: dev
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    ports: ["9092:9092"]
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    ports: ["2181:2181"]
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+```
+
+**Spring Boot Profile Configuration:**
+- **local**: Uses Docker Compose services (PostgreSQL, Redis, Kafka)
+- **dev**: Connects to DigitalOcean managed services for testing
+- **prod**: Full production configuration on Kubernetes
+
+**Development Workflow:**
+1. Run `docker-compose up` for local infrastructure
+2. Run Spring Boot services locally with `local` profile
+3. Debug in IDE (IntelliJ IDEA, VS Code) with breakpoints
+4. Hot reload with Spring Boot DevTools for rapid iteration
+5. Optional: Connect to cloud managed services for integration testing
+
 ## Glossary
 
 - **Platform_Service**: Spring Boot microservice handling authentication, user management, and field management
@@ -12,6 +233,7 @@ A comprehensive field booking platform that enables field owners to register and
 - **Customer**: User who books and pays for field reservations
 - **Field**: Sports facility (tennis court, padel court, or 5x5 football field) available for booking
 - **Booking**: Reservation of a field for a specific time slot
+- **Manual_Booking**: Booking created by field owner through admin interface without payment processing
 - **Time_Slot**: Specific date and time period when a field can be booked
 - **Payment_Authorization**: Initial payment validation before booking confirmation
 - **Booking_Conflict**: Situation where multiple users attempt to book the same time slot
@@ -19,34 +241,56 @@ A comprehensive field booking platform that enables field owners to register and
 - **Revenue_Split**: Distribution of payment between platform and field owner
 - **Geospatial_Query**: Location-based search using PostGIS extension
 - **Real_Time_Update**: Immediate propagation of availability changes via WebSocket
-- **Async_Operation**: Background processing via Amazon MSK (Kafka)
+- **Async_Operation**: Background processing via Kafka event streaming
 - **Sync_Operation**: Immediate processing requiring direct response
+- **PENDING_CONFIRMATION**: Booking status when field owner confirmation is required
+- **Confirmation_Timeout**: Configured time period for field owner to confirm pending bookings
+- **Cancellation_Policy**: Field owner-defined rules for refund calculations based on cancellation timing
+- **Terms_and_Conditions**: Legal agreement users must accept during registration
+- **Structured_Logs**: Logs with consistent formatting including correlation IDs and contextual information
+- **Log_Indexing**: Process of organizing logs for efficient searching and filtering
+- **Alert_Threshold**: Configurable criteria that trigger administrator notifications
+- **DOKS**: DigitalOcean Kubernetes Service - managed Kubernetes cluster
+- **Spaces**: DigitalOcean's S3-compatible object storage service with integrated CDN
+- **Droplet**: DigitalOcean virtual machine instance
+- **NGINX_Ingress**: Kubernetes ingress controller for routing and load balancing
+- **Docker_Compose**: Tool for defining and running multi-container Docker applications locally
+- **Spring_Profile**: Configuration profile for different environments (local, dev, prod)
+- **Hot_Reload**: Automatic application restart on code changes during development
 
 ## Requirements
 
-### Requirement 1: User Authentication and Authorization
+### Requirement 1: User Registration and Authentication
 
-**User Story:** As a field owner or customer, I want to securely authenticate using OAuth providers, so that I can access the platform with trusted credentials.
+**User Story:** As a new user, I want to register and authenticate using OAuth providers, so that I can access the platform with trusted credentials.
 
 #### Acceptance Criteria
 
-1. WHEN a user selects OAuth login, THE Platform_Service SHALL redirect to the selected provider (Google, Facebook, Apple ID)
-2. WHEN OAuth authentication succeeds, THE Platform_Service SHALL create or update the user profile with provider information
-3. WHEN authentication is complete, THE Platform_Service SHALL issue a JWT token with appropriate role-based permissions
-4. WHEN a JWT token expires, THE Platform_Service SHALL require re-authentication before allowing protected operations
-5. WHERE a user has multiple OAuth providers linked, THE Platform_Service SHALL allow login through any linked provider
+1. WHEN a user initiates registration, THE Platform_Service SHALL offer OAuth registration options (Google, Facebook, Apple ID)
+2. WHEN a user registers via OAuth, THE Platform_Service SHALL create a new user profile with provider information and selected role (field owner or customer)
+3. WHEN registration is initiated, THE Platform_Service SHALL present terms and conditions that must be accepted before account creation
+4. WHEN terms and conditions are not accepted, THE Platform_Service SHALL prevent account creation and registration completion
+5. WHEN a user selects OAuth login, THE Platform_Service SHALL redirect to the selected provider (Google, Facebook, Apple ID)
+6. WHEN OAuth authentication succeeds, THE Platform_Service SHALL create or update the user profile with provider information
+7. WHEN authentication is complete, THE Platform_Service SHALL issue a JWT token with appropriate role-based permissions
+8. WHEN a JWT token expires, THE Platform_Service SHALL require re-authentication before allowing protected operations
+9. WHERE a user has multiple OAuth providers linked, THE Platform_Service SHALL allow login through any linked provider
 
 ### Requirement 2: Field Registration and Management
 
-**User Story:** As a field owner, I want to register and manage my sports fields, so that customers can discover and book them.
+**User Story:** As a field owner, I want to register and manage my sports fields with flexible availability configuration, so that customers can discover and book them while I maintain full control over my inventory.
 
 #### Acceptance Criteria
 
 1. WHEN a field owner registers a new field, THE Platform_Service SHALL validate field information and store it with geospatial coordinates
-2. WHEN field information is updated, THE Platform_Service SHALL validate changes and propagate updates to all dependent services
-3. THE Platform_Service SHALL support multiple field types (tennis, padel, 5x5 football) with type-specific attributes
-4. WHEN field images are uploaded, THE Platform_Service SHALL store them in S3 and validate file formats and sizes
-5. WHEN availability windows are configured, THE Platform_Service SHALL validate time ranges and prevent overlapping unavailable periods
+2. WHEN a field owner adds multiple fields, THE Platform_Service SHALL support adding fields of the same or different types (tennis, padel, 5x5 football)
+3. WHEN a field owner removes a field, THE Platform_Service SHALL validate that no future confirmed bookings exist before allowing deletion
+4. WHEN field information is updated, THE Platform_Service SHALL validate changes and propagate updates to all dependent services
+5. THE Platform_Service SHALL support multiple field types (tennis, padel, 5x5 football) with type-specific attributes
+6. WHEN field images are uploaded, THE Platform_Service SHALL store them in S3 and validate file formats and sizes
+7. WHEN availability windows are configured, THE Platform_Service SHALL provide an intuitive interface for setting recurring availability patterns (daily, weekly, custom)
+8. WHEN availability windows are configured, THE Platform_Service SHALL validate time ranges and prevent overlapping unavailable periods
+9. WHEN a field owner needs to block specific dates or times, THE Platform_Service SHALL allow manual availability overrides for maintenance or private events
 
 ### Requirement 3: Location-Based Field Discovery
 
@@ -84,7 +328,34 @@ A comprehensive field booking platform that enables field owners to register and
 4. WHEN booking creation completes, THE Transaction_Service SHALL release the lock and publish booking events asynchronously
 5. WHILE processing a booking, THE Transaction_Service SHALL prevent other bookings for the same time slot
 
-### Requirement 6: Integrated Payment Processing
+### Requirement 6: Manual Booking Creation by Field Owners
+
+**User Story:** As a field owner, I want to create manual bookings through the admin interface, so that I can manage walk-in customers and phone reservations independently.
+
+#### Acceptance Criteria
+
+1. WHEN a field owner creates a manual booking, THE Platform_Service SHALL validate availability and create the booking without payment processing
+2. WHEN a manual booking is created, THE Platform_Service SHALL mark the time slot as unavailable for customer bookings
+3. WHEN a field owner creates a manual booking, THE Platform_Service SHALL allow optional customer information entry for record-keeping
+4. WHEN manual bookings are created, THE Platform_Service SHALL maintain the same conflict prevention mechanisms as customer bookings
+5. THE Platform_Service SHALL provide field owners with a standalone booking management interface that works independently of the customer-facing platform
+6. WHEN the trial period expires, THE Platform_Service SHALL enforce commercial licensing for continued use of manual booking features
+
+### Requirement 7: Pending Booking Confirmation Workflow
+
+**User Story:** As a customer, I want my booking to be held pending field owner confirmation when immediate availability cannot be guaranteed, so that I have a chance to secure the field even if there are uncertainties.
+
+#### Acceptance Criteria
+
+1. WHEN a booking is created but field availability is uncertain, THE Transaction_Service SHALL hold the full payment amount and create a booking with PENDING_CONFIRMATION status
+2. WHEN a booking enters PENDING_CONFIRMATION status, THE Transaction_Service SHALL send confirmation request notifications to the field owner via email and web platform
+3. WHEN a pending booking is not confirmed, THE Transaction_Service SHALL send reminder notifications to the field owner at configured intervals
+4. WHEN the confirmation timeout period expires without field owner response, THE Transaction_Service SHALL automatically cancel the booking and initiate a full refund
+5. WHEN a field owner confirms a pending booking, THE Transaction_Service SHALL change the booking status to CONFIRMED and capture the payment
+6. WHEN a field owner rejects a pending booking, THE Transaction_Service SHALL cancel the booking and initiate a full refund immediately
+7. THE Platform_Service SHALL allow configuration of confirmation timeout periods per field or field owner
+
+### Requirement 8: Integrated Payment Processing
 
 **User Story:** As a customer, I want to pay for bookings securely, so that my reservations are confirmed.
 
@@ -96,7 +367,23 @@ A comprehensive field booking platform that enables field owners to register and
 4. WHEN payment is captured, THE Transaction_Service SHALL calculate revenue split between platform and field owner
 5. THE Transaction_Service SHALL maintain PCI compliance throughout the payment process
 
-### Requirement 7: Asynchronous Notification System
+### Requirement 9: Booking Modification and Cancellation
+
+**User Story:** As a customer or field owner, I want to modify or cancel bookings with appropriate refund handling, so that I can manage changes to my reservations.
+
+#### Acceptance Criteria
+
+1. WHEN a customer requests booking modification, THE Transaction_Service SHALL validate new time slot availability before processing the change
+2. WHEN a booking modification is approved, THE Transaction_Service SHALL update the booking atomically and adjust payment if pricing differs
+3. WHEN a customer cancels a booking, THE Transaction_Service SHALL apply the field owner's cancellation policy to determine refund amount
+4. WHEN a field owner cancels a confirmed booking, THE Transaction_Service SHALL issue a full refund to the customer regardless of cancellation policy
+5. WHEN a cancellation is processed, THE Transaction_Service SHALL initiate the refund through Stripe and update booking status to CANCELLED
+6. WHEN a refund is initiated, THE Transaction_Service SHALL track refund status and notify the customer when the refund is completed
+7. THE Platform_Service SHALL allow field owners to configure cancellation policies including time-based refund percentages
+8. WHEN a booking is cancelled within the no-refund window, THE Transaction_Service SHALL still process the cancellation but issue no refund
+9. WHEN partial refunds are calculated, THE Transaction_Service SHALL deduct platform fees appropriately and adjust field owner revenue
+
+### Requirement 10: Asynchronous Notification System
 
 **User Story:** As a user, I want to receive timely notifications about my bookings, so that I stay informed about important events.
 
@@ -107,8 +394,12 @@ A comprehensive field booking platform that enables field owners to register and
 3. WHEN booking reminders are due, THE Transaction_Service SHALL send automated reminder notifications
 4. WHERE notification delivery fails, THE Transaction_Service SHALL implement retry logic with exponential backoff
 5. WHEN users configure notification preferences, THE Transaction_Service SHALL respect user preferences for notification types
+6. WHEN a booking enters PENDING_CONFIRMATION status, THE Transaction_Service SHALL send confirmation request notifications to field owners
+7. WHEN pending bookings are not confirmed, THE Transaction_Service SHALL send reminder notifications at configured intervals
+8. WHEN bookings are cancelled by either party, THE Transaction_Service SHALL send cancellation notifications to all affected parties
+9. WHEN refunds are processed, THE Transaction_Service SHALL send refund confirmation notifications to customers
 
-### Requirement 8: Booking Management and History
+### Requirement 11: Booking Management and History
 
 **User Story:** As a customer, I want to view and manage my booking history, so that I can track my reservations and make changes when needed.
 
@@ -119,8 +410,10 @@ A comprehensive field booking platform that enables field owners to register and
 3. WHERE cancellation is allowed, THE Transaction_Service SHALL process cancellations according to field owner policies
 4. WHEN booking modifications are requested, THE Transaction_Service SHALL validate availability and process changes atomically
 5. THE Transaction_Service SHALL maintain complete audit trails for all booking operations
+6. WHEN field owners view their bookings, THE Platform_Service SHALL display both customer bookings and manual bookings in a unified interface
+7. WHEN field owners need to confirm pending bookings, THE Platform_Service SHALL provide a clear interface showing all pending confirmation requests
 
-### Requirement 9: Analytics and Revenue Tracking
+### Requirement 12: Analytics and Revenue Tracking
 
 **User Story:** As a field owner, I want to track booking analytics and revenue, so that I can optimize my field management and pricing.
 
@@ -132,7 +425,7 @@ A comprehensive field booking platform that enables field owners to register and
 4. WHEN pricing strategies are evaluated, THE Platform_Service SHALL show revenue impact of different pricing configurations
 5. WHERE data export is requested, THE Platform_Service SHALL generate reports in standard formats (CSV, PDF)
 
-### Requirement 10: System Observability and Monitoring
+### Requirement 13: System Observability and Monitoring
 
 **User Story:** As a system administrator, I want comprehensive monitoring and tracing, so that I can maintain system health and performance.
 
@@ -144,7 +437,23 @@ A comprehensive field booking platform that enables field owners to register and
 4. WHEN errors occur, THE Transaction_Service SHALL log structured error information with correlation IDs
 5. THE Platform_Service SHALL integrate with Jaeger for distributed tracing across microservices
 
-### Requirement 11: Database Management and Migrations
+### Requirement 14: Centralized Logging and Alerting
+
+**User Story:** As a system administrator, I want centralized logging with indexing and alerting capabilities, so that I can quickly identify and respond to system issues.
+
+#### Acceptance Criteria
+
+1. WHEN any service operation occurs, THE Platform_Service and Transaction_Service SHALL produce structured logs with consistent formatting
+2. WHEN logs are generated, BOTH services SHALL include correlation IDs, timestamps, log levels, and contextual information
+3. THE Platform_Service SHALL integrate with a centralized logging system (ELK Stack or AWS CloudWatch Logs) for log aggregation
+4. WHEN logs are collected, THE logging system SHALL index logs for efficient searching and filtering
+5. WHEN ERROR or WARN level logs are generated, THE logging system SHALL trigger alerts to notify administrators
+6. THE Platform_Service SHALL provide configurable alert thresholds for different error types and severity levels
+7. WHEN critical errors occur, THE logging system SHALL send immediate notifications via multiple channels (email, Slack, PagerDuty)
+8. THE Platform_Service SHALL maintain log retention policies compliant with data protection regulations
+9. WHEN administrators search logs, THE logging system SHALL provide full-text search capabilities across all indexed fields
+
+### Requirement 15: Database Management and Migrations
 
 **User Story:** As a developer, I want automated database schema management, so that deployments are consistent and reliable.
 
@@ -156,7 +465,7 @@ A comprehensive field booking platform that enables field owners to register and
 4. WHERE rollback is required, THE Platform_Service SHALL support reversible migration scripts
 5. WHEN PostGIS extensions are required, THE Platform_Service SHALL ensure geospatial capabilities are properly configured
 
-### Requirement 12: Caching and Performance Optimization
+### Requirement 16: Caching and Performance Optimization
 
 **User Story:** As a user, I want fast response times for field searches and availability checks, so that I have a smooth booking experience.
 
@@ -167,3 +476,19 @@ A comprehensive field booking platform that enables field owners to register and
 3. WHEN cache entries expire, THE Platform_Service SHALL refresh data from the primary database
 4. WHERE cache invalidation is needed, THE Platform_Service SHALL remove stale entries and update dependent caches
 5. WHEN high load occurs, THE Platform_Service SHALL maintain performance through effective caching strategies
+
+### Requirement 17: Local Development Environment
+
+**User Story:** As a developer, I want to run the entire application stack locally with easy debugging capabilities, so that I can develop and test features efficiently without deploying to the cloud.
+
+#### Acceptance Criteria
+
+1. WHEN a developer runs the local setup, THE system SHALL provide a Docker Compose configuration that starts all required infrastructure services (PostgreSQL, Redis, Kafka)
+2. WHEN Spring Boot services are started locally, THE services SHALL support profile-based configuration (local, dev, prod) for different environments
+3. WHEN running in local mode, THE services SHALL connect to local Docker Compose infrastructure by default
+4. WHEN running in dev mode, THE services SHALL optionally connect to DigitalOcean managed services for integration testing
+5. WHEN debugging is needed, THE services SHALL support IDE integration (IntelliJ IDEA, VS Code) with breakpoints and hot reload
+6. WHEN frontend applications are run locally, THE applications SHALL connect to locally running backend services via configurable API endpoints
+7. WHEN local infrastructure is started, THE Docker Compose setup SHALL include sample data seeding for development
+8. THE local development setup SHALL include a README with clear instructions for setup, running, and debugging
+9. WHEN developers need to test cloud integrations, THE system SHALL support hybrid mode connecting local services to cloud-hosted managed databases
