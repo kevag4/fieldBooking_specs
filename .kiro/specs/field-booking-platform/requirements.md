@@ -240,17 +240,17 @@ graph TD
     AUTH -->|Yes| DATETIME[Date & Time Selection<br/>Pick date and time range]
     LOGIN --> DATETIME
     
-    DATETIME --> MAP[Map View with Court Markers<br/>Tabs: Tennis | Padel | Basketball | Football]
+    DATETIME --> MAP[Map View with Court Markers<br/>Tabs: Tennis Padel Basketball Football]
     
     MAP --> FILTER[User Selects Court Type Tab<br/>Map filters to show only selected type]
     
     FILTER --> SELECT[User Taps Court Marker<br/>View court details]
     
-    SELECT --> DETAILS[Court Details Sheet<br/>- Images<br/>- Price<br/>- Capacity<br/>- Duration<br/>- Amenities]
+    SELECT --> DETAILS[Court Details Sheet<br/>Images Price Capacity Duration Amenities]
     
     DETAILS --> BOOK{Book Court?}
     BOOK -->|No| MAP
-    BOOK -->|Yes| CONFIRM[Booking Confirmation<br/>- Court name<br/>- Date & time<br/>- Duration<br/>- Number of people<br/>- Total price]
+    BOOK -->|Yes| CONFIRM[Booking Confirmation<br/>Court name Date time Duration People Total price]
     
     CONFIRM --> PAYMENT[Payment Screen<br/>Stripe integration]
     
