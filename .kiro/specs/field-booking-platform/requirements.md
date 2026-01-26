@@ -2,7 +2,7 @@
 
 ## Introduction
 
-A comprehensive field booking platform that enables field owners to register and manage sports facilities (tennis, padel, 5x5 football) while allowing customers to discover, book, and pay for field reservations through mobile and web applications. The system implements a microservices architecture with real-time capabilities, geospatial queries, and robust payment processing.
+A comprehensive court booking platform that enables court owners to register and manage sports facilities (tennis, padel, basketball, 5x5 football) while allowing customers to discover, book, and pay for court reservations through mobile and web applications. The system implements a microservices architecture with real-time capabilities, geospatial queries, and robust payment processing.
 
 ## System Architecture Overview
 
@@ -102,12 +102,13 @@ graph TB
 ### Service Responsibilities
 
 **Platform Service (Spring Boot)**
-- User authentication and authorization (OAuth integration)
+- User authentication and authorization (OAuth integration with biometric support)
 - User registration with terms and conditions
-- Field registration, management, and deletion
-- Geospatial queries for field discovery
+- Court registration, management, and deletion
+- Court type configuration (duration, capacity, sport type)
+- Geospatial queries for court discovery
 - Availability management and caching
-- Manual booking creation for field owners
+- Manual booking creation for court owners
 - Analytics and revenue reporting
 - Database schema management (Flyway migrations)
 
@@ -225,27 +226,177 @@ services:
 4. Hot reload with Spring Boot DevTools for rapid iteration
 5. Optional: Connect to cloud managed services for integration testing
 
+## Customer User Journey
+
+### Overview
+The customer booking journey is designed for simplicity and speed, allowing users to find and book courts in just a few taps.
+
+### Journey Flow
+
+```mermaid
+graph TD
+    START[App Launch] --> AUTH{Authenticated?}
+    AUTH -->|No| LOGIN[Login Screen<br/>OAuth + Biometrics]
+    AUTH -->|Yes| DATETIME[Date & Time Selection<br/>Pick date and time range]
+    LOGIN --> DATETIME
+    
+    DATETIME --> MAP[Map View with Court Markers<br/>Tabs: Tennis | Padel | Basketball | Football]
+    
+    MAP --> FILTER[User Selects Court Type Tab<br/>Map filters to show only selected type]
+    
+    FILTER --> SELECT[User Taps Court Marker<br/>View court details]
+    
+    SELECT --> DETAILS[Court Details Sheet<br/>- Images<br/>- Price<br/>- Capacity<br/>- Duration<br/>- Amenities]
+    
+    DETAILS --> BOOK{Book Court?}
+    BOOK -->|No| MAP
+    BOOK -->|Yes| CONFIRM[Booking Confirmation<br/>- Court name<br/>- Date & time<br/>- Duration<br/>- Number of people<br/>- Total price]
+    
+    CONFIRM --> PAYMENT[Payment Screen<br/>Stripe integration]
+    
+    PAYMENT --> PROCESS{Payment Success?}
+    PROCESS -->|No| ERROR[Error Message<br/>Retry payment]
+    ERROR --> PAYMENT
+    
+    PROCESS -->|Yes| PENDING{Requires Confirmation?}
+    PENDING -->|Yes| PENDING_MSG[Booking Pending<br/>Awaiting owner confirmation]
+    PENDING -->|No| SUCCESS[Booking Confirmed<br/>Show confirmation details]
+    
+    PENDING_MSG --> NOTIF[Push Notification<br/>when confirmed/rejected]
+    SUCCESS --> DONE[Navigate to My Bookings]
+    NOTIF --> DONE
+```
+
+### Detailed Step-by-Step Journey
+
+**Step 1: Authentication**
+- User opens mobile app
+- If not authenticated: Login screen with OAuth options (Google, Facebook, Apple)
+- Biometric authentication (fingerprint/face ID) for returning users
+- Terms and conditions acceptance for new users
+
+**Step 2: Date & Time Selection**
+- Prominent date picker (calendar view)
+- Time range selector (start time and duration)
+- Default duration based on most popular court type
+- "Search Courts" button
+
+**Step 3: Map View with Court Filters**
+- Full-screen map centered on user's location
+- Court markers color-coded by type
+- **Favorite courts highlighted with special icon/color**
+- **Interactive map controls:**
+  - Zoom in/out buttons or pinch gestures
+  - Pan to explore different areas
+  - Dynamic marker loading based on visible map bounds
+  - Markers update as user zooms and pans
+  - Distance filter slider (e.g., "Within 5km")
+- Top tabs for filtering:
+  - **All Courts** (default)
+  - **Favorites** ⭐ (if user has favorites)
+  - **Tennis** 🎾
+  - **Padel** 🏓
+  - **Basketball** 🏀
+  - **Football** ⚽
+- Selecting a tab filters map markers in real-time
+- Cluster markers for multiple courts in same area (expand on zoom)
+- Current location button
+- Search bar for location/address search
+- Settings icon for personalization preferences
+
+**Step 4: Court Selection**
+- User taps on court marker
+- Bottom sheet slides up with court preview:
+  - Court name and type
+  - Distance from user
+  - Price per session
+  - Availability indicator (Available/Pending/Unavailable)
+  - "View Details" button
+
+**Step 5: Court Details**
+- Full-screen court details:
+  - Image carousel
+  - Court name, type, and rating
+  - **Favorite button (heart icon) to save court**
+  - Address with "Get Directions" button
+  - **Distance from user's current location**
+  - **Court-specific settings:**
+    - Session duration (e.g., "90 minutes")
+    - Capacity (e.g., "4 people")
+    - Price breakdown
+  - Amenities (parking, showers, equipment rental)
+  - Owner information
+  - Reviews and ratings
+  - Available time slots for selected date
+  - "Book Now" button
+
+**Step 6: Booking Confirmation**
+- Booking summary:
+  - Court name and image
+  - Selected date and time
+  - Duration (auto-filled based on court type)
+  - Number of people selector (max based on court capacity)
+  - Total price calculation
+  - Cancellation policy
+- "Proceed to Payment" button
+
+**Step 7: Payment**
+- Stripe payment interface
+- Saved payment methods
+- Add new card option
+- Apple Pay / Google Pay support
+- "Confirm and Pay" button
+
+**Step 8: Booking Result**
+- **If immediate confirmation:**
+  - Success animation
+  - Booking confirmation details
+  - Add to calendar option
+  - Share booking option
+  - "View My Bookings" button
+  
+- **If pending confirmation:**
+  - Pending status message
+  - "Your booking is awaiting owner confirmation"
+  - Estimated confirmation time
+  - Payment held message
+  - Push notification when confirmed/rejected
+
+**Step 9: Post-Booking**
+- Navigate to "My Bookings" tab
+- View booking details
+- Options to modify or cancel
+- Receive reminders before booking time
+- **Access to personalization settings:**
+  - Manage favorite courts
+  - Set preferred playing days/times
+  - Configure maximum search distance
+  - Notification preferences for favorites
+
 ## Glossary
 
-- **Platform_Service**: Spring Boot microservice handling authentication, user management, and field management
+- **Platform_Service**: Spring Boot microservice handling authentication, user management, and court management
 - **Transaction_Service**: Spring Boot microservice handling booking management, payment processing, and notifications
-- **Field_Owner**: User who owns and manages sports fields on the platform
-- **Customer**: User who books and pays for field reservations
-- **Field**: Sports facility (tennis court, padel court, or 5x5 football field) available for booking
-- **Booking**: Reservation of a field for a specific time slot
-- **Manual_Booking**: Booking created by field owner through admin interface without payment processing
-- **Time_Slot**: Specific date and time period when a field can be booked
+- **Court_Owner**: User who owns and manages sports courts on the platform
+- **Customer**: User who books and pays for court reservations
+- **Court**: Sports facility (tennis court, padel court, basketball court, or 5x5 football court) available for booking
+- **Court_Type**: Category of court with specific attributes (duration, capacity, sport type)
+- **Booking**: Reservation of a court for a specific time slot
+- **Manual_Booking**: Booking created by court owner through admin interface without payment processing
+- **Time_Slot**: Specific date and time period when a court can be booked
+- **Booking_Duration**: Configurable time length for court reservations (e.g., 60 mins, 90 mins)
+- **Court_Capacity**: Maximum number of people allowed per booking (configurable per court type)
 - **Payment_Authorization**: Initial payment validation before booking confirmation
 - **Booking_Conflict**: Situation where multiple users attempt to book the same time slot
-- **Availability_Window**: Time period when a field is available for booking
-- **Revenue_Split**: Distribution of payment between platform and field owner
+- **Availability_Window**: Time period when a court is available for booking
+- **Revenue_Split**: Distribution of payment between platform and court owner
 - **Geospatial_Query**: Location-based search using PostGIS extension
 - **Real_Time_Update**: Immediate propagation of availability changes via WebSocket
 - **Async_Operation**: Background processing via Kafka event streaming
 - **Sync_Operation**: Immediate processing requiring direct response
-- **PENDING_CONFIRMATION**: Booking status when field owner confirmation is required
-- **Confirmation_Timeout**: Configured time period for field owner to confirm pending bookings
-- **Cancellation_Policy**: Field owner-defined rules for refund calculations based on cancellation timing
+- **PENDING_CONFIRMATION**: Booking status when court owner confirmation is required
+- **Confirmation_Timeout**: Configured time period for court owner to confirm pending bookings
+- **Cancellation_Policy**: Court owner-defined rules for refund calculations based on cancellation timing
 - **Terms_and_Conditions**: Legal agreement users must accept during registration
 - **Structured_Logs**: Logs with consistent formatting including correlation IDs and contextual information
 - **Log_Indexing**: Process of organizing logs for efficient searching and filtering
@@ -257,17 +408,25 @@ services:
 - **Docker_Compose**: Tool for defining and running multi-container Docker applications locally
 - **Spring_Profile**: Configuration profile for different environments (local, dev, prod)
 - **Hot_Reload**: Automatic application restart on code changes during development
+- **Biometric_Authentication**: Fingerprint or face recognition for mobile app login
+- **Court_Filter**: Tab-based filtering of courts by type on the map interface
+- **User_Journey**: Step-by-step flow of customer interactions from search to booking confirmation
+- **Favorite_Court**: Court marked by customer for quick access and priority in search results
+- **Preferred_Time**: Customer's saved default days and times for court searches
+- **Search_Distance**: Maximum radius from customer's location for court discovery
+- **Map_Bounds**: Visible geographic area on the map that determines which courts are loaded
+- **Dynamic_Loading**: Real-time loading of court markers as the user zooms and pans the map
 
 ## Requirements
 
 ### Requirement 1: User Registration and Authentication
 
-**User Story:** As a new user, I want to register and authenticate using OAuth providers, so that I can access the platform with trusted credentials.
+**User Story:** As a new user, I want to register and authenticate using OAuth providers and biometrics, so that I can access the platform securely and conveniently.
 
 #### Acceptance Criteria
 
 1. WHEN a user initiates registration, THE Platform_Service SHALL offer OAuth registration options (Google, Facebook, Apple ID)
-2. WHEN a user registers via OAuth, THE Platform_Service SHALL create a new user profile with provider information and selected role (field owner or customer)
+2. WHEN a user registers via OAuth, THE Platform_Service SHALL create a new user profile with provider information and selected role (court owner or customer)
 3. WHEN registration is initiated, THE Platform_Service SHALL present terms and conditions that must be accepted before account creation
 4. WHEN terms and conditions are not accepted, THE Platform_Service SHALL prevent account creation and registration completion
 5. WHEN a user selects OAuth login, THE Platform_Service SHALL redirect to the selected provider (Google, Facebook, Apple ID)
@@ -275,48 +434,93 @@ services:
 7. WHEN authentication is complete, THE Platform_Service SHALL issue a JWT token with appropriate role-based permissions
 8. WHEN a JWT token expires, THE Platform_Service SHALL require re-authentication before allowing protected operations
 9. WHERE a user has multiple OAuth providers linked, THE Platform_Service SHALL allow login through any linked provider
+10. WHEN a mobile user enables biometric authentication, THE Platform_Service SHALL store encrypted credentials for biometric login
+11. WHEN a returning mobile user opens the app, THE Platform_Service SHALL offer biometric authentication (fingerprint or face recognition) as a login option
+12. WHEN biometric authentication succeeds, THE Platform_Service SHALL authenticate the user without requiring OAuth flow
 
-### Requirement 2: Field Registration and Management
+### Requirement 2: Court Registration and Management with Type Configuration
 
-**User Story:** As a field owner, I want to register and manage my sports fields with flexible availability configuration, so that customers can discover and book them while I maintain full control over my inventory.
-
-#### Acceptance Criteria
-
-1. WHEN a field owner registers a new field, THE Platform_Service SHALL validate field information and store it with geospatial coordinates
-2. WHEN a field owner adds multiple fields, THE Platform_Service SHALL support adding fields of the same or different types (tennis, padel, 5x5 football)
-3. WHEN a field owner removes a field, THE Platform_Service SHALL validate that no future confirmed bookings exist before allowing deletion
-4. WHEN field information is updated, THE Platform_Service SHALL validate changes and propagate updates to all dependent services
-5. THE Platform_Service SHALL support multiple field types (tennis, padel, 5x5 football) with type-specific attributes
-6. WHEN field images are uploaded, THE Platform_Service SHALL store them in S3 and validate file formats and sizes
-7. WHEN availability windows are configured, THE Platform_Service SHALL provide an intuitive interface for setting recurring availability patterns (daily, weekly, custom)
-8. WHEN availability windows are configured, THE Platform_Service SHALL validate time ranges and prevent overlapping unavailable periods
-9. WHEN a field owner needs to block specific dates or times, THE Platform_Service SHALL allow manual availability overrides for maintenance or private events
-
-### Requirement 3: Location-Based Field Discovery
-
-**User Story:** As a customer, I want to discover fields near my location, so that I can find convenient booking options.
+**User Story:** As a court owner, I want to register and manage my sports courts with flexible configuration for duration, capacity, and availability, so that customers can book them according to my specific requirements.
 
 #### Acceptance Criteria
 
-1. WHEN a customer searches by location, THE Platform_Service SHALL execute geospatial queries using PostGIS to find nearby fields
-2. WHEN search results are returned, THE Platform_Service SHALL include distance calculations and field availability status
-3. WHEN map integration is requested, THE Platform_Service SHALL provide field coordinates for map rendering
+1. WHEN a court owner registers a new court, THE Platform_Service SHALL validate court information and store it with geospatial coordinates
+2. WHEN a court owner adds multiple courts, THE Platform_Service SHALL support adding courts of the same or different types (tennis, padel, basketball, 5x5 football)
+3. WHEN a court owner configures a court type, THE Platform_Service SHALL allow setting default booking duration (e.g., 60 minutes, 90 minutes, 120 minutes)
+4. WHEN a court owner configures a court type, THE Platform_Service SHALL allow setting maximum capacity (number of people allowed per booking)
+5. WHEN a court owner configures court-specific settings, THE Platform_Service SHALL allow overriding default type settings for individual courts
+6. WHEN a court owner removes a court, THE Platform_Service SHALL validate that no future confirmed bookings exist before allowing deletion
+7. WHEN court information is updated, THE Platform_Service SHALL validate changes and propagate updates to all dependent services
+8. THE Platform_Service SHALL support multiple court types (tennis, padel, basketball, 5x5 football) with type-specific attributes
+9. WHEN court images are uploaded, THE Platform_Service SHALL store them in Spaces and validate file formats and sizes
+10. WHEN availability windows are configured, THE Platform_Service SHALL provide an intuitive interface for setting recurring availability patterns (daily, weekly, custom)
+11. WHEN availability windows are configured, THE Platform_Service SHALL validate time ranges and prevent overlapping unavailable periods
+12. WHEN a court owner needs to block specific dates or times, THE Platform_Service SHALL allow manual availability overrides for maintenance or private events
+13. WHEN court type defaults are defined, THE Platform_Service SHALL include standard configurations (e.g., Padel: 90 mins, 4 people; Basketball: 60 mins, 10 people)
+
+### Requirement 3: Location-Based Court Discovery
+
+**User Story:** As a customer, I want to discover courts near my location, so that I can find convenient booking options.
+
+#### Acceptance Criteria
+
+1. WHEN a customer searches by location, THE Platform_Service SHALL execute geospatial queries using PostGIS to find nearby courts
+2. WHEN search results are returned, THE Platform_Service SHALL include distance calculations and court availability status
+3. WHEN map integration is requested, THE Platform_Service SHALL provide court coordinates for map rendering
 4. WHERE search filters are applied, THE Platform_Service SHALL combine geospatial and attribute-based filtering
-5. WHEN search radius is specified, THE Platform_Service SHALL limit results to fields within the specified distance
+5. WHEN search radius is specified, THE Platform_Service SHALL limit results to courts within the specified distance
 
-### Requirement 4: Real-Time Availability Management
+### Requirement 4: Customer Search and Booking User Journey
 
-**User Story:** As a customer, I want to see real-time field availability, so that I can make informed booking decisions.
+**User Story:** As a customer, I want an intuitive search and booking experience with date/time selection, map-based court discovery with type filters, zoom controls, and personalized settings, so that I can quickly find and reserve courts that match my preferences.
+
+#### Acceptance Criteria
+
+1. WHEN a customer opens the mobile app, THE Platform_Service SHALL present a date and time range selector as the primary interface
+2. WHEN a customer selects a date and time range, THE Platform_Service SHALL validate the selection and enable the search action
+3. WHEN a customer initiates search, THE Platform_Service SHALL display a map view centered on the customer's current location with court markers
+4. WHEN the map view is displayed, THE Platform_Service SHALL show court type filter tabs at the top (All, Tennis, Padel, Basketball, Football)
+5. WHEN a customer selects a court type tab, THE Platform_Service SHALL filter map markers in real-time to show only courts of the selected type
+6. WHEN a customer zooms in or out on the map, THE Platform_Service SHALL dynamically load and display courts within the visible map bounds
+7. WHEN a customer pans the map to explore different areas, THE Platform_Service SHALL update court markers based on the new visible region
+8. WHEN multiple courts exist in close proximity, THE Platform_Service SHALL cluster markers and expand clusters when the user zooms in
+9. WHEN a customer taps a court marker, THE Platform_Service SHALL display a bottom sheet with court preview information
+10. WHEN a customer views court details, THE Platform_Service SHALL display court-specific configuration including duration and capacity
+11. WHEN a customer proceeds to booking, THE Platform_Service SHALL pre-fill booking duration based on the court type's default configuration
+12. WHEN a customer selects number of people, THE Platform_Service SHALL enforce the maximum capacity defined for that court type
+13. WHEN a customer completes booking, THE Platform_Service SHALL display appropriate confirmation or pending status based on court owner settings
+14. WHEN a booking requires confirmation, THE Platform_Service SHALL clearly communicate the pending status and expected confirmation timeline
+
+### Requirement 5: User Personalization and Preferences
+
+**User Story:** As a customer, I want to save my favorite courts, preferred times, and search distance settings, so that I can quickly find and book courts that match my regular playing habits.
+
+#### Acceptance Criteria
+
+1. WHEN a customer views a court, THE Platform_Service SHALL provide an option to mark the court as a favorite
+2. WHEN a customer marks a court as favorite, THE Platform_Service SHALL save the preference and display a visual indicator on the court
+3. WHEN a customer accesses their favorites, THE Platform_Service SHALL display a list of all favorited courts with quick booking options
+4. WHEN a customer sets preferred playing days and times, THE Platform_Service SHALL save these preferences and use them as default search parameters
+5. WHEN a customer configures maximum search distance, THE Platform_Service SHALL apply this filter to all court searches and map displays
+6. WHEN a customer has saved preferences, THE Platform_Service SHALL pre-populate search fields with preferred days, times, and distance on app launch
+7. WHEN a customer searches for courts, THE Platform_Service SHALL prioritize favorite courts in search results and highlight them on the map
+8. WHEN a customer updates personalization settings, THE Platform_Service SHALL immediately apply changes to the current search and map view
+9. THE Platform_Service SHALL allow customers to configure notification preferences for favorite courts (e.g., availability alerts, price changes)
+10. WHEN a favorite court becomes available at the customer's preferred time, THE Platform_Service SHALL optionally send a notification based on user preferences
+
+### Requirement 5: Real-Time Availability Management
+
+**User Story:** As a customer, I want to see real-time court availability, so that I can make informed booking decisions.
 
 #### Acceptance Criteria
 
 1. WHEN availability is requested, THE Platform_Service SHALL return current time slot status from cached data
 2. WHEN availability changes occur, THE Platform_Service SHALL broadcast updates via WebSocket to all connected clients
-3. WHEN multiple users view the same field, THE Platform_Service SHALL ensure all users see consistent availability information
+3. WHEN multiple users view the same court, THE Platform_Service SHALL ensure all users see consistent availability information
 4. WHILE a booking is in progress, THE Platform_Service SHALL mark the time slot as temporarily unavailable
 5. WHEN a booking is completed or cancelled, THE Platform_Service SHALL immediately update availability status
 
-### Requirement 5: Atomic Booking Creation with Conflict Prevention
+### Requirement 6: Atomic Booking Creation with Conflict Prevention
 
 **User Story:** As a customer, I want my booking to be processed atomically, so that double bookings are prevented.
 
@@ -328,34 +532,34 @@ services:
 4. WHEN booking creation completes, THE Transaction_Service SHALL release the lock and publish booking events asynchronously
 5. WHILE processing a booking, THE Transaction_Service SHALL prevent other bookings for the same time slot
 
-### Requirement 6: Manual Booking Creation by Field Owners
+### Requirement 7: Manual Booking Creation by Court Owners
 
-**User Story:** As a field owner, I want to create manual bookings through the admin interface, so that I can manage walk-in customers and phone reservations independently.
+**User Story:** As a court owner, I want to create manual bookings through the admin interface, so that I can manage walk-in customers and phone reservations independently.
 
 #### Acceptance Criteria
 
-1. WHEN a field owner creates a manual booking, THE Platform_Service SHALL validate availability and create the booking without payment processing
+1. WHEN a court owner creates a manual booking, THE Platform_Service SHALL validate availability and create the booking without payment processing
 2. WHEN a manual booking is created, THE Platform_Service SHALL mark the time slot as unavailable for customer bookings
-3. WHEN a field owner creates a manual booking, THE Platform_Service SHALL allow optional customer information entry for record-keeping
+3. WHEN a court owner creates a manual booking, THE Platform_Service SHALL allow optional customer information entry for record-keeping
 4. WHEN manual bookings are created, THE Platform_Service SHALL maintain the same conflict prevention mechanisms as customer bookings
-5. THE Platform_Service SHALL provide field owners with a standalone booking management interface that works independently of the customer-facing platform
+5. THE Platform_Service SHALL provide court owners with a standalone booking management interface that works independently of the customer-facing platform
 6. WHEN the trial period expires, THE Platform_Service SHALL enforce commercial licensing for continued use of manual booking features
 
-### Requirement 7: Pending Booking Confirmation Workflow
+### Requirement 8: Pending Booking Confirmation Workflow
 
-**User Story:** As a customer, I want my booking to be held pending field owner confirmation when immediate availability cannot be guaranteed, so that I have a chance to secure the field even if there are uncertainties.
+**User Story:** As a customer, I want my booking to be held pending court owner confirmation when immediate availability cannot be guaranteed, so that I have a chance to secure the court even if there are uncertainties.
 
 #### Acceptance Criteria
 
-1. WHEN a booking is created but field availability is uncertain, THE Transaction_Service SHALL hold the full payment amount and create a booking with PENDING_CONFIRMATION status
-2. WHEN a booking enters PENDING_CONFIRMATION status, THE Transaction_Service SHALL send confirmation request notifications to the field owner via email and web platform
-3. WHEN a pending booking is not confirmed, THE Transaction_Service SHALL send reminder notifications to the field owner at configured intervals
-4. WHEN the confirmation timeout period expires without field owner response, THE Transaction_Service SHALL automatically cancel the booking and initiate a full refund
-5. WHEN a field owner confirms a pending booking, THE Transaction_Service SHALL change the booking status to CONFIRMED and capture the payment
-6. WHEN a field owner rejects a pending booking, THE Transaction_Service SHALL cancel the booking and initiate a full refund immediately
-7. THE Platform_Service SHALL allow configuration of confirmation timeout periods per field or field owner
+1. WHEN a booking is created but court availability is uncertain, THE Transaction_Service SHALL hold the full payment amount and create a booking with PENDING_CONFIRMATION status
+2. WHEN a booking enters PENDING_CONFIRMATION status, THE Transaction_Service SHALL send confirmation request notifications to the court owner via email and web platform
+3. WHEN a pending booking is not confirmed, THE Transaction_Service SHALL send reminder notifications to the court owner at configured intervals
+4. WHEN the confirmation timeout period expires without court owner response, THE Transaction_Service SHALL automatically cancel the booking and initiate a full refund
+5. WHEN a court owner confirms a pending booking, THE Transaction_Service SHALL change the booking status to CONFIRMED and capture the payment
+6. WHEN a court owner rejects a pending booking, THE Transaction_Service SHALL cancel the booking and initiate a full refund immediately
+7. THE Platform_Service SHALL allow configuration of confirmation timeout periods per court or court owner
 
-### Requirement 8: Integrated Payment Processing
+### Requirement 9: Integrated Payment Processing
 
 **User Story:** As a customer, I want to pay for bookings securely, so that my reservations are confirmed.
 
@@ -364,58 +568,58 @@ services:
 1. WHEN payment is initiated, THE Transaction_Service SHALL create a Stripe payment intent with booking amount
 2. WHEN payment authorization succeeds, THE Transaction_Service SHALL confirm the booking before capturing payment
 3. WHEN payment fails, THE Transaction_Service SHALL release the time slot and notify the customer
-4. WHEN payment is captured, THE Transaction_Service SHALL calculate revenue split between platform and field owner
+4. WHEN payment is captured, THE Transaction_Service SHALL calculate revenue split between platform and court owner
 5. THE Transaction_Service SHALL maintain PCI compliance throughout the payment process
 
-### Requirement 9: Booking Modification and Cancellation
+### Requirement 10: Booking Modification and Cancellation
 
-**User Story:** As a customer or field owner, I want to modify or cancel bookings with appropriate refund handling, so that I can manage changes to my reservations.
+**User Story:** As a customer or court owner, I want to modify or cancel bookings with appropriate refund handling, so that I can manage changes to my reservations.
 
 #### Acceptance Criteria
 
 1. WHEN a customer requests booking modification, THE Transaction_Service SHALL validate new time slot availability before processing the change
 2. WHEN a booking modification is approved, THE Transaction_Service SHALL update the booking atomically and adjust payment if pricing differs
-3. WHEN a customer cancels a booking, THE Transaction_Service SHALL apply the field owner's cancellation policy to determine refund amount
-4. WHEN a field owner cancels a confirmed booking, THE Transaction_Service SHALL issue a full refund to the customer regardless of cancellation policy
+3. WHEN a customer cancels a booking, THE Transaction_Service SHALL apply the court owner's cancellation policy to determine refund amount
+4. WHEN a court owner cancels a confirmed booking, THE Transaction_Service SHALL issue a full refund to the customer regardless of cancellation policy
 5. WHEN a cancellation is processed, THE Transaction_Service SHALL initiate the refund through Stripe and update booking status to CANCELLED
 6. WHEN a refund is initiated, THE Transaction_Service SHALL track refund status and notify the customer when the refund is completed
-7. THE Platform_Service SHALL allow field owners to configure cancellation policies including time-based refund percentages
+7. THE Platform_Service SHALL allow court owners to configure cancellation policies including time-based refund percentages
 8. WHEN a booking is cancelled within the no-refund window, THE Transaction_Service SHALL still process the cancellation but issue no refund
-9. WHEN partial refunds are calculated, THE Transaction_Service SHALL deduct platform fees appropriately and adjust field owner revenue
+9. WHEN partial refunds are calculated, THE Transaction_Service SHALL deduct platform fees appropriately and adjust court owner revenue
 
-### Requirement 10: Asynchronous Notification System
+### Requirement 11: Asynchronous Notification System
 
 **User Story:** As a user, I want to receive timely notifications about my bookings, so that I stay informed about important events.
 
 #### Acceptance Criteria
 
-1. WHEN a booking is confirmed, THE Transaction_Service SHALL publish notification events to Amazon MSK
+1. WHEN a booking is confirmed, THE Transaction_Service SHALL publish notification events to Kafka
 2. WHEN notification events are processed, THE Transaction_Service SHALL send push notifications to mobile apps and email notifications
 3. WHEN booking reminders are due, THE Transaction_Service SHALL send automated reminder notifications
 4. WHERE notification delivery fails, THE Transaction_Service SHALL implement retry logic with exponential backoff
 5. WHEN users configure notification preferences, THE Transaction_Service SHALL respect user preferences for notification types
-6. WHEN a booking enters PENDING_CONFIRMATION status, THE Transaction_Service SHALL send confirmation request notifications to field owners
+6. WHEN a booking enters PENDING_CONFIRMATION status, THE Transaction_Service SHALL send confirmation request notifications to court owners
 7. WHEN pending bookings are not confirmed, THE Transaction_Service SHALL send reminder notifications at configured intervals
 8. WHEN bookings are cancelled by either party, THE Transaction_Service SHALL send cancellation notifications to all affected parties
 9. WHEN refunds are processed, THE Transaction_Service SHALL send refund confirmation notifications to customers
 
-### Requirement 11: Booking Management and History
+### Requirement 12: Booking Management and History
 
 **User Story:** As a customer, I want to view and manage my booking history, so that I can track my reservations and make changes when needed.
 
 #### Acceptance Criteria
 
 1. WHEN booking history is requested, THE Transaction_Service SHALL return paginated booking records for the authenticated user
-2. WHEN booking details are viewed, THE Transaction_Service SHALL display complete booking information including field details and payment status
-3. WHERE cancellation is allowed, THE Transaction_Service SHALL process cancellations according to field owner policies
+2. WHEN booking details are viewed, THE Transaction_Service SHALL display complete booking information including court details and payment status
+3. WHERE cancellation is allowed, THE Transaction_Service SHALL process cancellations according to court owner policies
 4. WHEN booking modifications are requested, THE Transaction_Service SHALL validate availability and process changes atomically
 5. THE Transaction_Service SHALL maintain complete audit trails for all booking operations
-6. WHEN field owners view their bookings, THE Platform_Service SHALL display both customer bookings and manual bookings in a unified interface
-7. WHEN field owners need to confirm pending bookings, THE Platform_Service SHALL provide a clear interface showing all pending confirmation requests
+6. WHEN court owners view their bookings, THE Platform_Service SHALL display both customer bookings and manual bookings in a unified interface
+7. WHEN court owners need to confirm pending bookings, THE Platform_Service SHALL provide a clear interface showing all pending confirmation requests
 
-### Requirement 12: Analytics and Revenue Tracking
+### Requirement 13: Analytics and Revenue Tracking
 
-**User Story:** As a field owner, I want to track booking analytics and revenue, so that I can optimize my field management and pricing.
+**User Story:** As a court owner, I want to track booking analytics and revenue, so that I can optimize my court management and pricing.
 
 #### Acceptance Criteria
 
@@ -467,11 +671,11 @@ services:
 
 ### Requirement 16: Caching and Performance Optimization
 
-**User Story:** As a user, I want fast response times for field searches and availability checks, so that I have a smooth booking experience.
+**User Story:** As a user, I want fast response times for court searches and availability checks, so that I have a smooth booking experience.
 
 #### Acceptance Criteria
 
-1. WHEN field data is requested, THE Platform_Service SHALL serve frequently accessed data from Redis cache
+1. WHEN court data is requested, THE Platform_Service SHALL serve frequently accessed data from Redis cache
 2. WHEN availability is checked, THE Platform_Service SHALL use cached availability data with real-time updates
 3. WHEN cache entries expire, THE Platform_Service SHALL refresh data from the primary database
 4. WHERE cache invalidation is needed, THE Platform_Service SHALL remove stale entries and update dependent caches
