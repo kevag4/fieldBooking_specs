@@ -429,6 +429,10 @@ graph TD
 - **Service_Mesh**: Infrastructure layer that handles service-to-service communication
 - **Pod_Replica**: Instance of a containerized service running in Kubernetes
 - **Environment_Promotion**: Process of deploying code from one environment to the next (dev → test → staging → production)
+- **Advertisement**: Promotional content displayed to users within the application
+- **Feature_Flag**: Configuration toggle that enables or disables specific features without code deployment
+- **Ad_Placement**: Designated location within the UI where advertisements can be displayed
+- **Ad_Provider**: Third-party service that supplies advertisement content (e.g., Google AdMob, Facebook Audience Network)
 
 ## Requirements
 
@@ -847,3 +851,57 @@ graph TD
 38. WHEN security policies are violated, THE service mesh SHALL deny requests and log security events
 39. THE Istio configuration SHALL implement rate limiting at the service mesh level to prevent abuse
 40. THE production environment SHALL enforce strict security policies while dev/test environments MAY use relaxed policies for development convenience
+
+
+### Requirement 23: Optional Advertisement System with Feature Flags
+
+**User Story:** As a platform owner, I want the ability to enable advertisements in the future with minimal code changes, so that I can monetize the platform when ready without disrupting the user experience.
+
+#### Acceptance Criteria
+
+**Feature Flag Configuration:**
+1. THE Platform_Service SHALL implement a feature flag system for enabling/disabling advertisements globally
+2. WHEN the advertisement feature flag is disabled (default), THE system SHALL not display any advertisements or make calls to ad providers
+3. WHEN the advertisement feature flag is enabled, THE system SHALL activate advertisement functionality across all client applications
+4. THE feature flag configuration SHALL be manageable through environment variables or configuration files without code deployment
+5. THE Platform_Service SHALL support per-environment feature flag configuration (e.g., ads disabled in dev/test, enabled in production)
+
+**Advertisement Integration Architecture:**
+6. THE mobile applications SHALL integrate with ad provider SDKs (Google AdMob for Android/iOS, or equivalent)
+7. THE web applications SHALL integrate with web-based ad networks (Google AdSense or equivalent)
+8. WHEN advertisements are enabled, THE system SHALL support multiple ad providers with configurable priority and fallback
+9. THE Platform_Service SHALL provide an API endpoint to check advertisement feature flag status
+10. WHEN ad providers are unavailable, THE system SHALL gracefully degrade and hide ad placements without affecting core functionality
+
+**Advertisement Placement Strategy:**
+11. THE system SHALL define non-intrusive ad placements that do not interfere with core booking functionality
+12. WHEN advertisements are displayed, THE mobile app SHALL show banner ads at the bottom of search results and court listings
+13. WHEN advertisements are displayed, THE mobile app MAY show interstitial ads between major workflow transitions (e.g., after booking confirmation)
+14. THE system SHALL NOT display advertisements during critical booking flows (payment, booking confirmation)
+15. THE system SHALL limit advertisement frequency to maintain positive user experience (e.g., maximum 1 interstitial per session)
+16. WHEN users have active bookings or premium subscriptions, THE system MAY reduce or eliminate advertisement display
+
+**Advertisement Content and Compliance:**
+17. THE system SHALL only display advertisements appropriate for sports and recreation context
+18. THE Platform_Service SHALL implement content filtering to block inappropriate advertisement categories
+19. THE system SHALL comply with GDPR, CCPA, and other privacy regulations regarding advertisement tracking
+20. WHEN users are in regions with strict privacy laws, THE system SHALL request consent before displaying personalized advertisements
+21. THE system SHALL provide users with the ability to opt-out of personalized advertisements while still showing contextual ads
+
+**Advertisement Analytics and Revenue Tracking:**
+22. WHEN advertisements are enabled, THE Platform_Service SHALL track advertisement impressions and click-through rates
+23. THE Platform_Service SHALL integrate with ad provider analytics to monitor revenue and performance
+24. THE system SHALL provide dashboard metrics showing advertisement revenue alongside booking revenue
+25. WHEN advertisement performance is poor, THE system SHALL provide alerts and recommendations for optimization
+
+**User Experience Considerations:**
+26. THE system SHALL ensure advertisements do not slow down application performance or increase load times significantly
+27. WHEN advertisements fail to load, THE system SHALL collapse ad placements to avoid blank spaces
+28. THE system SHALL implement ad caching to minimize network requests and improve performance
+29. THE mobile applications SHALL respect user's battery and data usage by limiting ad refresh rates
+30. THE system SHALL provide a "Report Ad" functionality for users to flag inappropriate content
+
+**Future Premium/Ad-Free Option:**
+31. THE system architecture SHALL support future implementation of premium subscriptions that remove advertisements
+32. THE Platform_Service SHALL include a user preference flag for ad-free experience (initially unused, for future premium feature)
+33. WHEN checking advertisement display eligibility, THE system SHALL consider user subscription status for future extensibility
