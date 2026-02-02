@@ -421,6 +421,14 @@ graph TD
 - **Search_Distance**: Maximum radius from customer's location for court discovery
 - **Map_Bounds**: Visible geographic area on the map that determines which courts are loaded
 - **Dynamic_Loading**: Real-time loading of court markers as the user zooms and pans the map
+- **Functional_Test**: External API test that validates end-to-end business workflows
+- **Stress_Test**: Performance test that validates system behavior under high load
+- **UI_Test**: Automated test that validates user interface behavior and interactions
+- **Test_Environment**: Isolated environment for running QA tests without affecting production
+- **Istio**: Service mesh providing traffic management, security, and observability for microservices
+- **Service_Mesh**: Infrastructure layer that handles service-to-service communication
+- **Pod_Replica**: Instance of a containerized service running in Kubernetes
+- **Environment_Promotion**: Process of deploying code from one environment to the next (dev → test → staging → production)
 
 ## Requirements
 
@@ -732,3 +740,110 @@ graph TD
 7. WHEN local infrastructure is started, THE Docker Compose setup SHALL include sample data seeding for development
 8. THE local development setup SHALL include a README with clear instructions for setup, running, and debugging
 9. WHEN developers need to test cloud integrations, THE system SHALL support hybrid mode connecting local services to cloud-hosted managed databases
+
+### Requirement 21: QA Testing Framework and Automation
+
+**User Story:** As a QA engineer, I want a comprehensive testing framework with functional API tests, stress tests, and UI tests, so that I can validate system quality and performance before production releases.
+
+#### Acceptance Criteria
+
+**Functional API Testing:**
+1. THE QA framework SHALL use pytest for external API testing independent of service unit tests
+2. WHEN functional tests are executed, THE framework SHALL test APIs externally through the load balancer/ingress endpoint
+3. THE QA framework SHALL include end-to-end test scenarios covering complete user workflows (registration, search, booking, payment, cancellation)
+4. WHEN API tests run, THE framework SHALL validate response status codes, response schemas, and business logic correctness
+5. THE QA framework SHALL test authentication flows including OAuth providers and biometric authentication simulation
+6. THE QA framework SHALL test booking conflict scenarios and verify atomic transaction behavior
+7. THE QA framework SHALL test payment processing flows including success, failure, and refund scenarios
+8. THE QA framework SHALL test notification delivery for both push notifications and WebSocket messages
+9. THE QA framework SHALL test geospatial queries and verify correct distance calculations and filtering
+10. THE QA framework SHALL test weather API integration and verify correct data display
+
+**Stress and Performance Testing:**
+11. THE QA framework SHALL include stress tests using pytest with concurrent request simulation
+12. WHEN stress tests are executed, THE framework SHALL simulate high concurrent booking attempts for the same time slot
+13. THE QA framework SHALL test system behavior under load with configurable user counts (100, 500, 1000+ concurrent users)
+14. WHEN stress tests run, THE framework SHALL measure response times, throughput, and error rates
+15. THE QA framework SHALL test WebSocket connection scalability with multiple concurrent connections
+16. THE QA framework SHALL test database connection pool behavior under high load
+17. THE QA framework SHALL test cache performance and hit rates under various load patterns
+18. WHEN performance degradation is detected, THE framework SHALL generate detailed performance reports
+
+**UI Testing:**
+19. THE QA framework SHALL include UI tests for web applications using Selenium or Playwright
+20. THE QA framework SHALL include UI tests for mobile applications using Appium or Detox (for Flutter)
+21. WHEN UI tests are executed, THE framework SHALL test complete user journeys from login to booking confirmation
+22. THE QA framework SHALL test map interactions including zoom, pan, marker selection, and filtering
+23. THE QA framework SHALL test form validations, error messages, and user feedback
+24. THE QA framework SHALL test responsive design across different screen sizes and devices
+25. THE QA framework SHALL test accessibility compliance (WCAG 2.1 Level AA)
+26. WHEN UI tests run, THE framework SHALL capture screenshots and videos for failed tests
+
+**Test Environment and CI/CD Integration:**
+27. THE QA framework SHALL run against a dedicated test environment separate from production
+28. THE test environment SHALL be automatically provisioned and torn down for each test run
+29. THE QA framework SHALL integrate with GitHub Actions for automated test execution on pull requests
+30. WHEN tests fail, THE framework SHALL provide detailed failure reports with logs, screenshots, and reproduction steps
+31. THE QA framework SHALL support test data management with setup and teardown fixtures
+32. THE QA framework SHALL generate test coverage reports showing API endpoint coverage
+33. WHEN all tests pass, THE CI/CD pipeline SHALL proceed with deployment approval
+34. THE QA framework SHALL support smoke tests for quick validation after deployments
+
+
+### Requirement 22: Multi-Environment Deployment with Service Mesh
+
+**User Story:** As a DevOps engineer, I want to deploy the application across multiple environments (dev, test, staging, production) with Istio service mesh and appropriate resource allocation, so that I can ensure proper testing, staging, and production operations.
+
+#### Acceptance Criteria
+
+**Environment Configuration:**
+1. THE deployment infrastructure SHALL support four distinct environments: dev, test, staging, and production
+2. WHEN services are deployed to dev environment, THE system SHALL run 1 pod replica per service (Platform Service, Transaction Service)
+3. WHEN services are deployed to test environment, THE system SHALL run 1 pod replica per service
+4. WHEN services are deployed to staging environment, THE system SHALL run 3 pod replicas per service
+5. WHEN services are deployed to production environment, THE system SHALL run 3 pod replicas per service
+6. WHEN multiple replicas are deployed, THE system SHALL distribute pods across different worker nodes for high availability
+7. THE staging environment SHALL mirror production configuration exactly (same resource limits, same replica count)
+
+**Istio Service Mesh Integration:**
+8. THE deployment infrastructure SHALL install and configure Istio service mesh in all environments
+9. WHEN services are deployed, THE system SHALL inject Istio sidecar proxies into all service pods automatically
+10. WHEN Istio is configured, THE system SHALL enable mutual TLS (mTLS) for service-to-service communication
+11. THE Istio configuration SHALL implement traffic management rules including retry policies, timeouts, and circuit breakers
+12. THE Istio configuration SHALL implement canary deployments for gradual rollout of new versions
+13. WHEN traffic routing is configured, THE system SHALL support A/B testing and blue-green deployments through Istio VirtualServices
+14. THE Istio configuration SHALL collect distributed tracing data and send to Jaeger
+15. THE Istio configuration SHALL collect service mesh metrics and expose to Prometheus
+16. WHEN service mesh is active, THE system SHALL provide traffic visualization through Kiali dashboard
+
+**Environment-Specific Configuration:**
+17. THE dev environment SHALL use minimal resource limits (0.5 CPU, 1GB RAM per pod) for cost optimization
+18. THE test environment SHALL use minimal resource limits (0.5 CPU, 1GB RAM per pod) for cost optimization
+19. THE staging environment SHALL use production-equivalent resource limits (1 CPU, 2GB RAM per pod)
+20. THE production environment SHALL use production resource limits (1 CPU, 2GB RAM per pod) with auto-scaling enabled
+21. WHEN auto-scaling is configured, THE production environment SHALL scale from 3 to 10 replicas based on CPU and memory utilization
+22. THE staging environment SHALL use separate managed databases (PostgreSQL, Redis) from production
+23. THE dev and test environments MAY share managed database instances with separate schemas
+
+**Environment Promotion and CI/CD:**
+24. THE CI/CD pipeline SHALL automatically deploy to dev environment on merge to develop branch
+25. THE CI/CD pipeline SHALL deploy to test environment after successful dev deployment and automated tests
+26. THE CI/CD pipeline SHALL deploy to staging environment on merge to main branch with manual approval
+27. THE CI/CD pipeline SHALL deploy to production environment after successful staging validation with manual approval
+28. WHEN deploying to any environment, THE system SHALL execute Istio-aware health checks before routing traffic
+29. WHEN deployment fails, THE system SHALL automatically rollback using Istio traffic shifting
+30. THE deployment process SHALL use Terraform to provision environment-specific infrastructure
+
+**Service Mesh Observability:**
+31. THE Istio configuration SHALL provide request-level metrics including latency, error rates, and traffic volume
+32. THE Istio configuration SHALL enable distributed tracing with correlation IDs across all services
+33. WHEN service mesh observability is active, THE system SHALL visualize service dependencies and traffic flow
+34. THE Istio configuration SHALL generate access logs for all service-to-service communication
+35. WHEN anomalies are detected, THE service mesh SHALL trigger alerts based on configurable thresholds
+
+**Security and Policy Enforcement:**
+36. THE Istio configuration SHALL enforce authentication policies requiring valid JWT tokens for all API requests
+37. THE Istio configuration SHALL implement authorization policies restricting service-to-service communication
+38. WHEN security policies are violated, THE service mesh SHALL deny requests and log security events
+39. THE Istio configuration SHALL implement rate limiting at the service mesh level to prevent abuse
+40. THE production environment SHALL enforce strict security policies while dev/test environments MAY use relaxed policies for development convenience
