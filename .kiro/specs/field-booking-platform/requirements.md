@@ -381,6 +381,8 @@ graph TD
 - **Customer**: User who books and pays for court reservations
 - **Court**: Sports facility (tennis court, padel court, basketball court, or 5x5 football court) available for booking
 - **Court_Type**: Category of court with specific attributes (duration, capacity, sport type)
+- **Court_Location_Type**: Attribute indicating if a court is in an open space (outdoor) or closed area (indoor)
+- **Weather_Forecast**: Real-time weather prediction for the selected booking date and time
 - **Booking**: Reservation of a court for a specific time slot
 - **Manual_Booking**: Booking created by court owner through admin interface without payment processing
 - **Time_Slot**: Specific date and time period when a court can be booked
@@ -401,6 +403,9 @@ graph TD
 - **Structured_Logs**: Logs with consistent formatting including correlation IDs and contextual information
 - **Log_Indexing**: Process of organizing logs for efficient searching and filtering
 - **Alert_Threshold**: Configurable criteria that trigger administrator notifications
+- **Device_Registration_Token**: Unique identifier for a user's mobile device used for push notifications (FCM for Android, APNs for iOS)
+- **Push_Notification**: Notification sent to a user's device when the app is closed or in background
+- **In_App_Notification**: Real-time notification delivered via WebSocket when the app is active
 - **DOKS**: DigitalOcean Kubernetes Service - managed Kubernetes cluster
 - **Spaces**: DigitalOcean's S3-compatible object storage service with integrated CDN
 - **Droplet**: DigitalOcean virtual machine instance
@@ -440,23 +445,24 @@ graph TD
 
 ### Requirement 2: Court Registration and Management with Type Configuration
 
-**User Story:** As a court owner, I want to register and manage my sports courts with flexible configuration for duration, capacity, and availability, so that customers can book them according to my specific requirements.
+**User Story:** As a court owner, I want to register and manage my sports courts with flexible configuration for duration, capacity, location type, and availability, so that customers can book them according to my specific requirements and make informed decisions based on indoor/outdoor preferences.
 
 #### Acceptance Criteria
 
 1. WHEN a court owner registers a new court, THE Platform_Service SHALL validate court information and store it with geospatial coordinates
 2. WHEN a court owner adds multiple courts, THE Platform_Service SHALL support adding courts of the same or different types (tennis, padel, basketball, 5x5 football)
-3. WHEN a court owner configures a court type, THE Platform_Service SHALL allow setting default booking duration (e.g., 60 minutes, 90 minutes, 120 minutes)
-4. WHEN a court owner configures a court type, THE Platform_Service SHALL allow setting maximum capacity (number of people allowed per booking)
-5. WHEN a court owner configures court-specific settings, THE Platform_Service SHALL allow overriding default type settings for individual courts
-6. WHEN a court owner removes a court, THE Platform_Service SHALL validate that no future confirmed bookings exist before allowing deletion
-7. WHEN court information is updated, THE Platform_Service SHALL validate changes and propagate updates to all dependent services
-8. THE Platform_Service SHALL support multiple court types (tennis, padel, basketball, 5x5 football) with type-specific attributes
-9. WHEN court images are uploaded, THE Platform_Service SHALL store them in Spaces and validate file formats and sizes
-10. WHEN availability windows are configured, THE Platform_Service SHALL provide an intuitive interface for setting recurring availability patterns (daily, weekly, custom)
-11. WHEN availability windows are configured, THE Platform_Service SHALL validate time ranges and prevent overlapping unavailable periods
-12. WHEN a court owner needs to block specific dates or times, THE Platform_Service SHALL allow manual availability overrides for maintenance or private events
-13. WHEN court type defaults are defined, THE Platform_Service SHALL include standard configurations (e.g., Padel: 90 mins, 4 people; Basketball: 60 mins, 10 people)
+3. WHEN a court owner configures a court, THE Platform_Service SHALL require selection of location type (indoor or outdoor)
+4. WHEN a court owner configures a court type, THE Platform_Service SHALL allow setting default booking duration (e.g., 60 minutes, 90 minutes, 120 minutes)
+5. WHEN a court owner configures a court type, THE Platform_Service SHALL allow setting maximum capacity (number of people allowed per booking)
+6. WHEN a court owner configures court-specific settings, THE Platform_Service SHALL allow overriding default type settings for individual courts
+7. WHEN a court owner removes a court, THE Platform_Service SHALL validate that no future confirmed bookings exist before allowing deletion
+8. WHEN court information is updated, THE Platform_Service SHALL validate changes and propagate updates to all dependent services
+9. THE Platform_Service SHALL support multiple court types (tennis, padel, basketball, 5x5 football) with type-specific attributes
+10. WHEN court images are uploaded, THE Platform_Service SHALL store them in Spaces and validate file formats and sizes
+11. WHEN availability windows are configured, THE Platform_Service SHALL provide an intuitive interface for setting recurring availability patterns (daily, weekly, custom)
+12. WHEN availability windows are configured, THE Platform_Service SHALL validate time ranges and prevent overlapping unavailable periods
+13. WHEN a court owner needs to block specific dates or times, THE Platform_Service SHALL allow manual availability overrides for maintenance or private events
+14. WHEN court type defaults are defined, THE Platform_Service SHALL include standard configurations (e.g., Padel: 90 mins, 4 people; Basketball: 60 mins, 10 people)
 
 ### Requirement 3: Location-Based Court Discovery
 
@@ -472,24 +478,28 @@ graph TD
 
 ### Requirement 4: Customer Search and Booking User Journey
 
-**User Story:** As a customer, I want an intuitive search and booking experience with date/time selection, map-based court discovery with type filters, zoom controls, and personalized settings, so that I can quickly find and reserve courts that match my preferences.
+**User Story:** As a customer, I want an intuitive search and booking experience with date/time selection, weather forecast display, map-based court discovery with type and location filters, zoom controls, and personalized settings, so that I can quickly find and reserve courts that match my preferences and weather conditions.
 
 #### Acceptance Criteria
 
 1. WHEN a customer opens the mobile app, THE Platform_Service SHALL present a date and time range selector as the primary interface
-2. WHEN a customer selects a date and time range, THE Platform_Service SHALL validate the selection and enable the search action
-3. WHEN a customer initiates search, THE Platform_Service SHALL display a map view centered on the customer's current location with court markers
-4. WHEN the map view is displayed, THE Platform_Service SHALL show court type filter tabs at the top (All, Tennis, Padel, Basketball, Football)
-5. WHEN a customer selects a court type tab, THE Platform_Service SHALL filter map markers in real-time to show only courts of the selected type
-6. WHEN a customer zooms in or out on the map, THE Platform_Service SHALL dynamically load and display courts within the visible map bounds
-7. WHEN a customer pans the map to explore different areas, THE Platform_Service SHALL update court markers based on the new visible region
-8. WHEN multiple courts exist in close proximity, THE Platform_Service SHALL cluster markers and expand clusters when the user zooms in
-9. WHEN a customer taps a court marker, THE Platform_Service SHALL display a bottom sheet with court preview information
-10. WHEN a customer views court details, THE Platform_Service SHALL display court-specific configuration including duration and capacity
-11. WHEN a customer proceeds to booking, THE Platform_Service SHALL pre-fill booking duration based on the court type's default configuration
-12. WHEN a customer selects number of people, THE Platform_Service SHALL enforce the maximum capacity defined for that court type
-13. WHEN a customer completes booking, THE Platform_Service SHALL display appropriate confirmation or pending status based on court owner settings
-14. WHEN a booking requires confirmation, THE Platform_Service SHALL clearly communicate the pending status and expected confirmation timeline
+2. WHEN a customer selects a date and time range, THE Platform_Service SHALL fetch and display weather forecast for the selected date and time
+3. WHEN weather forecast is displayed, THE Platform_Service SHALL show temperature, precipitation probability, wind conditions, and weather icon
+4. WHEN a customer views the weather forecast, THE Platform_Service SHALL provide visual indicators suggesting indoor or outdoor court suitability
+5. WHEN a customer initiates search, THE Platform_Service SHALL display a map view centered on the customer's current location with court markers
+6. WHEN the map view is displayed, THE Platform_Service SHALL show court type filter tabs at the top (All, Tennis, Padel, Basketball, Football)
+7. WHEN the map view is displayed, THE Platform_Service SHALL provide location type filters (All, Indoor, Outdoor)
+8. WHEN a customer selects a court type tab, THE Platform_Service SHALL filter map markers in real-time to show only courts of the selected type
+9. WHEN a customer selects a location type filter, THE Platform_Service SHALL filter map markers to show only indoor or outdoor courts
+10. WHEN a customer zooms in or out on the map, THE Platform_Service SHALL dynamically load and display courts within the visible map bounds
+11. WHEN a customer pans the map to explore different areas, THE Platform_Service SHALL update court markers based on the new visible region
+12. WHEN multiple courts exist in close proximity, THE Platform_Service SHALL cluster markers and expand clusters when the user zooms in
+13. WHEN a customer taps a court marker, THE Platform_Service SHALL display a bottom sheet with court preview information including location type (indoor/outdoor)
+14. WHEN a customer views court details, THE Platform_Service SHALL display court-specific configuration including duration, capacity, and location type
+15. WHEN a customer proceeds to booking, THE Platform_Service SHALL pre-fill booking duration based on the court type's default configuration
+16. WHEN a customer selects number of people, THE Platform_Service SHALL enforce the maximum capacity defined for that court type
+17. WHEN a customer completes booking, THE Platform_Service SHALL display appropriate confirmation or pending status based on court owner settings
+18. WHEN a booking requires confirmation, THE Platform_Service SHALL clearly communicate the pending status and expected confirmation timeline
 
 ### Requirement 5: User Personalization and Preferences
 
@@ -508,7 +518,24 @@ graph TD
 9. THE Platform_Service SHALL allow customers to configure notification preferences for favorite courts (e.g., availability alerts, price changes)
 10. WHEN a favorite court becomes available at the customer's preferred time, THE Platform_Service SHALL optionally send a notification based on user preferences
 
-### Requirement 5: Real-Time Availability Management
+### Requirement 6: Weather Forecast Integration
+
+**User Story:** As a customer, I want to see weather forecasts for my selected booking time, so that I can make informed decisions about booking indoor or outdoor courts.
+
+#### Acceptance Criteria
+
+1. WHEN a customer selects a date and time for court search, THE Platform_Service SHALL integrate with a weather API to fetch forecast data
+2. WHEN weather data is retrieved, THE Platform_Service SHALL display temperature, precipitation probability, wind speed, humidity, and weather conditions
+3. WHEN weather conditions indicate rain or extreme temperatures, THE Platform_Service SHALL display a recommendation badge suggesting indoor courts
+4. WHEN weather conditions are favorable, THE Platform_Service SHALL display a recommendation badge highlighting outdoor courts
+5. WHEN weather forecast is unavailable or fails to load, THE Platform_Service SHALL gracefully handle the error and allow search to continue without weather data
+6. WHEN a customer views court details for an outdoor court, THE Platform_Service SHALL display the weather forecast prominently
+7. WHEN a customer views court details for an indoor court, THE Platform_Service SHALL optionally show weather for context but emphasize indoor protection
+8. THE Platform_Service SHALL cache weather forecast data for reasonable periods to minimize API calls and improve performance
+9. WHEN weather conditions change significantly, THE Platform_Service SHALL update the forecast and notify users with existing bookings for outdoor courts
+10. THE Platform_Service SHALL support multiple weather data providers (e.g., OpenWeatherMap, WeatherAPI) with configurable fallback options
+
+### Requirement 7: Real-Time Availability Management
 
 **User Story:** As a customer, I want to see real-time court availability, so that I can make informed booking decisions.
 
@@ -520,7 +547,7 @@ graph TD
 4. WHILE a booking is in progress, THE Platform_Service SHALL mark the time slot as temporarily unavailable
 5. WHEN a booking is completed or cancelled, THE Platform_Service SHALL immediately update availability status
 
-### Requirement 6: Atomic Booking Creation with Conflict Prevention
+### Requirement 8: Atomic Booking Creation with Conflict Prevention
 
 **User Story:** As a customer, I want my booking to be processed atomically, so that double bookings are prevented.
 
@@ -532,7 +559,7 @@ graph TD
 4. WHEN booking creation completes, THE Transaction_Service SHALL release the lock and publish booking events asynchronously
 5. WHILE processing a booking, THE Transaction_Service SHALL prevent other bookings for the same time slot
 
-### Requirement 7: Manual Booking Creation by Court Owners
+### Requirement 9: Manual Booking Creation by Court Owners
 
 **User Story:** As a court owner, I want to create manual bookings through the admin interface, so that I can manage walk-in customers and phone reservations independently.
 
@@ -545,7 +572,7 @@ graph TD
 5. THE Platform_Service SHALL provide court owners with a standalone booking management interface that works independently of the customer-facing platform
 6. WHEN the trial period expires, THE Platform_Service SHALL enforce commercial licensing for continued use of manual booking features
 
-### Requirement 8: Pending Booking Confirmation Workflow
+### Requirement 10: Pending Booking Confirmation Workflow
 
 **User Story:** As a customer, I want my booking to be held pending court owner confirmation when immediate availability cannot be guaranteed, so that I have a chance to secure the court even if there are uncertainties.
 
@@ -559,7 +586,7 @@ graph TD
 6. WHEN a court owner rejects a pending booking, THE Transaction_Service SHALL cancel the booking and initiate a full refund immediately
 7. THE Platform_Service SHALL allow configuration of confirmation timeout periods per court or court owner
 
-### Requirement 9: Integrated Payment Processing
+### Requirement 11: Integrated Payment Processing
 
 **User Story:** As a customer, I want to pay for bookings securely, so that my reservations are confirmed.
 
@@ -571,7 +598,7 @@ graph TD
 4. WHEN payment is captured, THE Transaction_Service SHALL calculate revenue split between platform and court owner
 5. THE Transaction_Service SHALL maintain PCI compliance throughout the payment process
 
-### Requirement 10: Booking Modification and Cancellation
+### Requirement 12: Booking Modification and Cancellation
 
 **User Story:** As a customer or court owner, I want to modify or cancel bookings with appropriate refund handling, so that I can manage changes to my reservations.
 
@@ -587,23 +614,32 @@ graph TD
 8. WHEN a booking is cancelled within the no-refund window, THE Transaction_Service SHALL still process the cancellation but issue no refund
 9. WHEN partial refunds are calculated, THE Transaction_Service SHALL deduct platform fees appropriately and adjust court owner revenue
 
-### Requirement 11: Asynchronous Notification System
+### Requirement 13: Asynchronous Notification System
 
-**User Story:** As a user, I want to receive timely notifications about my bookings, so that I stay informed about important events.
+**User Story:** As a user, I want to receive timely notifications about my bookings both when the app is active and when it's closed, so that I stay informed about important events regardless of app state.
 
 #### Acceptance Criteria
 
-1. WHEN a booking is confirmed, THE Transaction_Service SHALL publish notification events to Kafka
-2. WHEN notification events are processed, THE Transaction_Service SHALL send push notifications to mobile apps and email notifications
-3. WHEN booking reminders are due, THE Transaction_Service SHALL send automated reminder notifications
-4. WHERE notification delivery fails, THE Transaction_Service SHALL implement retry logic with exponential backoff
-5. WHEN users configure notification preferences, THE Transaction_Service SHALL respect user preferences for notification types
-6. WHEN a booking enters PENDING_CONFIRMATION status, THE Transaction_Service SHALL send confirmation request notifications to court owners
-7. WHEN pending bookings are not confirmed, THE Transaction_Service SHALL send reminder notifications at configured intervals
-8. WHEN bookings are cancelled by either party, THE Transaction_Service SHALL send cancellation notifications to all affected parties
-9. WHEN refunds are processed, THE Transaction_Service SHALL send refund confirmation notifications to customers
+1. WHEN a user logs into the mobile app, THE Platform_Service SHALL register the device token (FCM for Android, APNs for iOS) and associate it with the customer ID
+2. WHEN a user logs in from multiple devices, THE Platform_Service SHALL maintain multiple device registration tokens per customer ID
+3. WHEN a user logs out or uninstalls the app, THE Platform_Service SHALL remove the device registration token from the customer's profile
+4. WHEN a booking event occurs, THE Transaction_Service SHALL publish notification events to Kafka
+5. WHEN notification events are processed and the user's app is CLOSED or in BACKGROUND, THE Transaction_Service SHALL send push notifications to all registered devices using their device tokens
+6. WHEN notification events are processed and the user's app is ACTIVE, THE Transaction_Service SHALL send in-app notifications via WebSocket connection
+7. WHEN a user has the app active, THE Platform_Service SHALL maintain a persistent WebSocket connection for real-time notifications
+8. WHEN a WebSocket connection is established, THE Platform_Service SHALL authenticate the connection using the user's JWT token
+9. WHEN booking reminders are due, THE Transaction_Service SHALL send notifications through both push (if app closed) and WebSocket (if app active)
+10. WHERE push notification delivery fails, THE Transaction_Service SHALL implement retry logic with exponential backoff
+11. WHERE WebSocket delivery fails, THE Transaction_Service SHALL fall back to push notification delivery
+12. WHEN users configure notification preferences, THE Transaction_Service SHALL respect user preferences for notification types and channels
+13. WHEN a booking enters PENDING_CONFIRMATION status, THE Transaction_Service SHALL send confirmation request notifications to court owners via both push and WebSocket
+14. WHEN pending bookings are not confirmed, THE Transaction_Service SHALL send reminder notifications at configured intervals
+15. WHEN bookings are cancelled by either party, THE Transaction_Service SHALL send cancellation notifications to all affected parties
+16. WHEN refunds are processed, THE Transaction_Service SHALL send refund confirmation notifications to customers
+17. THE Platform_Service SHALL store device registration tokens securely with encryption at rest
+18. WHEN device tokens expire or become invalid, THE Platform_Service SHALL automatically remove them and request re-registration on next app launch
 
-### Requirement 12: Booking Management and History
+### Requirement 14: Booking Management and History
 
 **User Story:** As a customer, I want to view and manage my booking history, so that I can track my reservations and make changes when needed.
 
@@ -617,7 +653,7 @@ graph TD
 6. WHEN court owners view their bookings, THE Platform_Service SHALL display both customer bookings and manual bookings in a unified interface
 7. WHEN court owners need to confirm pending bookings, THE Platform_Service SHALL provide a clear interface showing all pending confirmation requests
 
-### Requirement 13: Analytics and Revenue Tracking
+### Requirement 15: Analytics and Revenue Tracking
 
 **User Story:** As a court owner, I want to track booking analytics and revenue, so that I can optimize my court management and pricing.
 
@@ -629,19 +665,19 @@ graph TD
 4. WHEN pricing strategies are evaluated, THE Platform_Service SHALL show revenue impact of different pricing configurations
 5. WHERE data export is requested, THE Platform_Service SHALL generate reports in standard formats (CSV, PDF)
 
-### Requirement 13: System Observability and Monitoring
+### Requirement 16: System Observability and Monitoring
 
 **User Story:** As a system administrator, I want comprehensive monitoring and tracing, so that I can maintain system health and performance.
 
 #### Acceptance Criteria
 
-1. THE Platform_Service SHALL emit OpenTelemetry traces for all critical operations including authentication and field management
+1. THE Platform_Service SHALL emit OpenTelemetry traces for all critical operations including authentication and court management
 2. THE Transaction_Service SHALL emit OpenTelemetry traces for all booking and payment operations
 3. WHEN system metrics are collected, THE Platform_Service SHALL expose Prometheus metrics for performance monitoring
 4. WHEN errors occur, THE Transaction_Service SHALL log structured error information with correlation IDs
 5. THE Platform_Service SHALL integrate with Jaeger for distributed tracing across microservices
 
-### Requirement 14: Centralized Logging and Alerting
+### Requirement 17: Centralized Logging and Alerting
 
 **User Story:** As a system administrator, I want centralized logging with indexing and alerting capabilities, so that I can quickly identify and respond to system issues.
 
@@ -649,7 +685,7 @@ graph TD
 
 1. WHEN any service operation occurs, THE Platform_Service and Transaction_Service SHALL produce structured logs with consistent formatting
 2. WHEN logs are generated, BOTH services SHALL include correlation IDs, timestamps, log levels, and contextual information
-3. THE Platform_Service SHALL integrate with a centralized logging system (ELK Stack or AWS CloudWatch Logs) for log aggregation
+3. THE Platform_Service SHALL integrate with a centralized logging system (Loki or CloudWatch Logs) for log aggregation
 4. WHEN logs are collected, THE logging system SHALL index logs for efficient searching and filtering
 5. WHEN ERROR or WARN level logs are generated, THE logging system SHALL trigger alerts to notify administrators
 6. THE Platform_Service SHALL provide configurable alert thresholds for different error types and severity levels
@@ -657,7 +693,7 @@ graph TD
 8. THE Platform_Service SHALL maintain log retention policies compliant with data protection regulations
 9. WHEN administrators search logs, THE logging system SHALL provide full-text search capabilities across all indexed fields
 
-### Requirement 15: Database Management and Migrations
+### Requirement 18: Database Management and Migrations
 
 **User Story:** As a developer, I want automated database schema management, so that deployments are consistent and reliable.
 
@@ -669,7 +705,7 @@ graph TD
 4. WHERE rollback is required, THE Platform_Service SHALL support reversible migration scripts
 5. WHEN PostGIS extensions are required, THE Platform_Service SHALL ensure geospatial capabilities are properly configured
 
-### Requirement 16: Caching and Performance Optimization
+### Requirement 19: Caching and Performance Optimization
 
 **User Story:** As a user, I want fast response times for court searches and availability checks, so that I have a smooth booking experience.
 
@@ -681,7 +717,7 @@ graph TD
 4. WHERE cache invalidation is needed, THE Platform_Service SHALL remove stale entries and update dependent caches
 5. WHEN high load occurs, THE Platform_Service SHALL maintain performance through effective caching strategies
 
-### Requirement 17: Local Development Environment
+### Requirement 20: Local Development Environment
 
 **User Story:** As a developer, I want to run the entire application stack locally with easy debugging capabilities, so that I can develop and test features efficiently without deploying to the cloud.
 
