@@ -4,19 +4,12 @@ inclusion: manual
 
 # Spring Boot 3.x & Java 21+ Microservice Architecture Context
 
-This document provides architectural patterns, best practices, and design principles extracted from production-grade Spring Boot microservices repositories to guide the design of our field booking platform microservice.
+> When designing or implementing any Spring Boot microservice in this project, follow the patterns and standards in this document. It codifies the hexagonal architecture from Buckpal (thombergs), the testing rigor from rieckpil's Masterclass, and operational best practices from Spring PetClinic Microservices and abhisheksr01's best-practices repo.
 
-**Primary References:**
-- **Buckpal (thombergs)**: Hexagonal Architecture implementation
-- **Testing Spring Boot Applications Masterclass (rieckpil)**: Comprehensive testing standards
-- **Spring PetClinic Microservices**: Official Spring Cloud patterns
-- **Spring Boot Microservice Best Practices**: DevSecOps integration
+## 1. Hexagonal Architecture (Ports & Adapters)
 
-## Core Architectural Philosophy
+### Layer Separation
 
-### 1. Hexagonal Architecture (Ports & Adapters)
-
-**Strict Layer Separation:**
 ```
 ┌─────────────────────────────────────────┐
 │         Infrastructure Layer            │
@@ -30,320 +23,84 @@ This document provides architectural patterns, best practices, and design princi
 └─────────────────────────────────────────┘
 ```
 
-**Key Principles:**
-- **Domain Independence**: Domain layer has ZERO dependencies on frameworks or infrastructure
-- **Dependency Inversion**: All dependencies point INWARD toward the domain
-- **Ports**: Interfaces defined in Application layer
-- **Adapters**: Implementations in Infrastructure layer
+### Dependency Rules
 
-### 2. Package Structure (Buckpal Style)
+| Direction | Allowed? |
+|-----------|----------|
+| Domain → Nothing (pure Java) | ✅ |
+| Application → Domain | ✅ |
+| Adapter → Application + Domain | ✅ |
+| Domain → Application | ❌ |
+| Domain → Adapter | ❌ |
+| Application → Adapter | ❌ |
+
+### Package Structure (Buckpal Style)
 
 ```
 src/main/java/com/company/bookingplatform/
-├── domain/                          # Pure business logic
-│   ├── Booking.java                 # Entity
-│   ├── BookingId.java              # Value Object (Record)
-│   ├── BookingStatus.java          # Enum
-│   └── BookingService.java         # Domain Service
+├── domain/                          # Pure business logic — NO framework imports
+│   ├── model/
+│   │   ├── Booking.java            # Entity (rich, with business methods)
+│   │   ├── BookingId.java          # Value Object (Record)
+│   │   ├── BookingStatus.java      # Enum
+│   │   ├── DateRange.java          # Value Object (Record)
+│   │   └── Money.java              # Value Object (Record)
+│   ├── exception/
+│   │   └── BookingConflictException.java
+│   └── service/
+│       └── BookingDomainService.java  # Cross-entity domain logic
 │
 ├── application/                     # Use Cases & Ports
 │   ├── port/
-│   │   ├── in/                     # Incoming Ports (Use Cases)
+│   │   ├── in/                     # Incoming Ports (Use Case interfaces)
 │   │   │   ├── CreateBookingUseCase.java
 │   │   │   ├── CancelBookingUseCase.java
-│   │   │   └── GetBookingUseCase.java
-│   │   └── out/                    # Outgoing Ports (SPI)
+│   │   │   └── GetBookingQuery.java
+│   │   └── out/                    # Outgoing Ports (SPI interfaces)
 │   │       ├── LoadBookingPort.java
 │   │       ├── SaveBookingPort.java
 │   │       └── SendNotificationPort.java
-│   └── service/                    # Use Case Implementations
+│   └── service/                    # Use Case implementations
 │       ├── CreateBookingService.java
 │       └── CancelBookingService.java
 │
-└── adapter/                        # Infrastructure Adapters
-    ├── in/                         # Incoming Adapters
+└── adapter/                        # Infrastructure implementations
+    ├── in/
     │   └── web/
     │       ├── BookingController.java
-    │       └── BookingRequest.java
-    ├── out/                        # Outgoing Adapters
+    │       ├── dto/
+    │       │   ├── CreateBookingRequest.java   # Record
+    │       │   └── BookingResponse.java        # Record
+    │       └── mapper/
+    │           └── BookingWebMapper.java
+    ├── out/
     │   ├── persistence/
-    │   │   ├── BookingJpaEntity.java
-    │   │   ├── BookingRepository.java
+    │   │   ├── entity/
+    │   │   │   └── BookingJpaEntity.java
+    │   │   ├── repository/
+    │   │   │   └── BookingRepository.java
+    │   │   ├── mapper/
+    │   │   │   └── BookingPersistenceMapper.java
     │   │   └── BookingPersistenceAdapter.java
-    │   └── notification/
-    │       └── EmailNotificationAdapter.java
-    └── config/                     # Configuration
+    │   ├── messaging/
+    │   │   └── KafkaNotificationAdapter.java
+    │   └── external/
+    │       └── StripePaymentAdapter.java
+    └── config/
         └── BeanConfiguration.java
 ```
 
-### 3. Dependency Rules
 
-**ALLOWED:**
-- Domain → Nothing (pure Java)
-- Application → Domain
-- Adapter → Application + Domain
+## 2. Domain Layer Patterns
 
-**FORBIDDEN:**
-- Domain → Application ❌
-- Domain → Adapter ❌
-- Application → Adapter ❌
+### Rich Domain Entities (NOT anemic)
 
-### 4. Immutability & Modern Java
+Business logic lives inside domain objects. Entities are not just data holders.
 
-**Use Java Records for:**
-- DTOs (Request/Response objects)
-- Value Objects (BookingId, Money, DateRange)
-- Command objects
-- Query results
+Domain entities should provide two construction paths (Buckpal pattern):
+1. **Creation**: Constructor for new entities (no ID yet, assigned by persistence)
+2. **Reconstitution**: Static factory method for loading existing entities from the database
 
-**Example:**
-```java
-// Value Object
-public record BookingId(Long value) {
-    public BookingId {
-        if (value == null || value <= 0) {
-            throw new IllegalArgumentException("Invalid booking ID");
-        }
-    }
-}
-
-// DTO
-public record CreateBookingRequest(
-    @NotNull Long fieldId,
-    @NotNull Long userId,
-    @NotNull LocalDateTime startTime,
-    @NotNull LocalDateTime endTime
-) {}
-```
-
-## Testing Standards (rieckpil Masterclass)
-
-### Test Pyramid Strategy
-
-```
-        /\
-       /E2E\      ← Few (Full @SpringBootTest)
-      /------\
-     /  Slice  \  ← Some (@WebMvcTest, @DataJpaTest)
-    /----------\
-   /   Unit     \ ← Many (Pure Java, no Spring)
-  /--------------\
-```
-
-### 1. Unit Tests (Fast, Isolated)
-
-**Characteristics:**
-- NO Spring Context
-- Pure Java/JUnit 5
-- Mock dependencies with Mockito
-- Test domain logic in isolation
-
-**Example:**
-```java
-class BookingTest {
-    
-    @Test
-    void shouldNotAllowBookingInThePast() {
-        // Given
-        LocalDateTime pastDate = LocalDateTime.now().minusDays(1);
-        
-        // When & Then
-        assertThatThrownBy(() -> 
-            new Booking(pastDate, LocalDateTime.now())
-        ).isInstanceOf(IllegalArgumentException.class)
-         .hasMessageContaining("past");
-    }
-}
-```
-
-### 2. Slice Tests (Focused, Fast)
-
-**@WebMvcTest** - Test Controllers in Isolation
-```java
-@WebMvcTest(BookingController.class)
-class BookingControllerTest {
-    
-    @Autowired
-    private MockMvc mockMvc;
-    
-    @MockBean
-    private CreateBookingUseCase createBookingUseCase;
-    
-    @Test
-    void shouldCreateBooking() throws Exception {
-        // Given
-        CreateBookingRequest request = new CreateBookingRequest(/*...*/);
-        
-        // When & Then
-        mockMvc.perform(post("/api/v1/bookings")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(objectMapper.writeValueAsString(request)))
-            .andExpect(status().isCreated())
-            .andExpect(jsonPath("$.id").exists());
-    }
-}
-```
-
-**@DataJpaTest** - Test Repository Layer
-```java
-@DataJpaTest
-@AutoConfigureTestDatabase(replace = Replace.NONE)
-@Testcontainers
-class BookingRepositoryTest {
-    
-    @Container
-    static PostgreSQLContainer<?> postgres = 
-        new PostgreSQLContainer<>("postgres:15-alpine");
-    
-    @Autowired
-    private BookingRepository repository;
-    
-    @Test
-    void shouldSaveAndRetrieveBooking() {
-        // Given
-        BookingJpaEntity booking = new BookingJpaEntity(/*...*/);
-        
-        // When
-        BookingJpaEntity saved = repository.save(booking);
-        
-        // Then
-        assertThat(saved.getId()).isNotNull();
-        assertThat(repository.findById(saved.getId()))
-            .isPresent()
-            .hasValueSatisfying(b -> 
-                assertThat(b.getStatus()).isEqualTo(BookingStatus.CONFIRMED)
-            );
-    }
-}
-```
-
-### 3. Integration Tests (Testcontainers)
-
-**CRITICAL RULES:**
-- ✅ Use Testcontainers for real databases
-- ❌ NO H2 for integration tests
-- ✅ Test with production-like environment
-- ✅ Use @SpringBootTest sparingly (slow)
-
-**Example with Testcontainers:**
-```java
-@SpringBootTest(webEnvironment = WebEnvironment.RANDOM_PORT)
-@Testcontainers
-class BookingIntegrationTest {
-    
-    @Container
-    static PostgreSQLContainer<?> postgres = 
-        new PostgreSQLContainer<>("postgres:15-alpine")
-            .withDatabaseName("testdb")
-            .withUsername("test")
-            .withPassword("test");
-    
-    @Container
-    static LocalStackContainer localstack = 
-        new LocalStackContainer(DockerImageName.parse("localstack/localstack:3.0"))
-            .withServices(LocalStackContainer.Service.SQS);
-    
-    @Autowired
-    private TestRestTemplate restTemplate;
-    
-    @DynamicPropertySource
-    static void properties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", postgres::getJdbcUrl);
-        registry.add("spring.datasource.username", postgres::getUsername);
-        registry.add("spring.datasource.password", postgres::getPassword);
-        registry.add("aws.sqs.endpoint", () -> 
-            localstack.getEndpointOverride(LocalStackContainer.Service.SQS));
-    }
-    
-    @Test
-    void shouldCreateBookingEndToEnd() {
-        // Given
-        CreateBookingRequest request = new CreateBookingRequest(/*...*/);
-        
-        // When
-        ResponseEntity<BookingResponse> response = restTemplate.postForEntity(
-            "/api/v1/bookings",
-            request,
-            BookingResponse.class
-        );
-        
-        // Then
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
-        assertThat(response.getBody().id()).isNotNull();
-    }
-}
-```
-
-### 4. Testing External APIs
-
-**WireMock for HTTP Mocking:**
-```java
-@SpringBootTest
-@AutoConfigureWireMock(port = 0)
-class ExternalApiTest {
-    
-    @Autowired
-    private PaymentServiceClient paymentClient;
-    
-    @Test
-    void shouldProcessPayment() {
-        // Given
-        stubFor(post("/payments")
-            .willReturn(aResponse()
-                .withStatus(200)
-                .withHeader("Content-Type", "application/json")
-                .withBody("{\"status\":\"SUCCESS\"}")));
-        
-        // When
-        PaymentResult result = paymentClient.processPayment(/*...*/);
-        
-        // Then
-        assertThat(result.status()).isEqualTo(PaymentStatus.SUCCESS);
-    }
-}
-```
-
-### 5. Testing Async Operations
-
-**Awaitility for Async Testing:**
-```java
-@Test
-void shouldProcessMessageAsynchronously() {
-    // Given
-    BookingCreatedEvent event = new BookingCreatedEvent(/*...*/);
-    
-    // When
-    eventPublisher.publish(event);
-    
-    // Then
-    await()
-        .atMost(Duration.ofSeconds(5))
-        .untilAsserted(() -> {
-            verify(notificationService).sendEmail(any());
-        });
-}
-```
-
-### 6. Test Naming Convention
-
-**Pattern:** `should[ExpectedBehavior]When[StateUnderTest]`
-
-Examples:
-- `shouldCreateBookingWhenValidRequest()`
-- `shouldThrowExceptionWhenBookingInPast()`
-- `shouldReturnEmptyWhenNoBookingsFound()`
-
-### 7. Test Coverage Goals
-
-- **Unit Tests**: 80%+ coverage
-- **Integration Tests**: Critical paths
-- **E2E Tests**: Happy paths only
-
-## Architecture Patterns
-
-### 1. Domain Layer (Pure Business Logic)
-
-**Entities:**
 ```java
 public class Booking {
     private final BookingId id;
@@ -351,33 +108,43 @@ public class Booking {
     private final UserId userId;
     private final DateRange dateRange;
     private BookingStatus status;
-    
-    // Constructor with validation
+
+    // Creation — new booking, no ID yet
     public Booking(FieldId fieldId, UserId userId, DateRange dateRange) {
-        this.id = null; // Generated by persistence
+        this.id = null;
         this.fieldId = requireNonNull(fieldId);
         this.userId = requireNonNull(userId);
         this.dateRange = requireNonNull(dateRange);
         this.status = BookingStatus.PENDING;
-        
         validateBooking();
     }
-    
-    // Business logic methods
+
+    // Reconstitution — loading from database (used by persistence mapper)
+    public static Booking withId(BookingId id, FieldId fieldId, UserId userId,
+                                  DateRange dateRange, BookingStatus status) {
+        Booking booking = new Booking(fieldId, userId, dateRange);
+        // Use reflection or package-private setter to assign id and status
+        return booking;
+    }
+
+    public Optional<BookingId> getId() {
+        return Optional.ofNullable(this.id);
+    }
+
     public void confirm() {
         if (status != BookingStatus.PENDING) {
             throw new IllegalStateException("Only pending bookings can be confirmed");
         }
         this.status = BookingStatus.CONFIRMED;
     }
-    
+
     public void cancel() {
         if (status == BookingStatus.CANCELLED) {
             throw new IllegalStateException("Booking already cancelled");
         }
         this.status = BookingStatus.CANCELLED;
     }
-    
+
     private void validateBooking() {
         if (dateRange.isInPast()) {
             throw new IllegalArgumentException("Cannot book in the past");
@@ -386,45 +153,68 @@ public class Booking {
 }
 ```
 
-**Value Objects (Records):**
+### Value Objects as Java Records
+
+Records enforce immutability and include validation in compact constructors.
+
 ```java
+public record BookingId(Long value) {
+    public BookingId {
+        if (value == null || value <= 0) {
+            throw new IllegalArgumentException("Invalid booking ID");
+        }
+    }
+}
+
 public record DateRange(LocalDateTime start, LocalDateTime end) {
     public DateRange {
-        if (start == null || end == null) {
-            throw new IllegalArgumentException("Dates cannot be null");
-        }
+        requireNonNull(start, "Start time cannot be null");
+        requireNonNull(end, "End time cannot be null");
         if (start.isAfter(end)) {
             throw new IllegalArgumentException("Start must be before end");
         }
     }
-    
+
     public boolean isInPast() {
         return end.isBefore(LocalDateTime.now());
     }
-    
+
     public boolean overlaps(DateRange other) {
-        return !this.end.isBefore(other.start) && 
-               !other.end.isBefore(this.start);
+        return !this.end.isBefore(other.start) && !other.end.isBefore(this.start);
     }
 }
 ```
 
-### 2. Application Layer (Use Cases & Ports)
+## 3. Application Layer Patterns
 
-**Incoming Port (Use Case Interface):**
+### Incoming Ports (one interface per use case)
+
 ```java
 public interface CreateBookingUseCase {
     BookingId createBooking(CreateBookingCommand command);
 }
+```
 
+### Self-Validating Commands (Buckpal Pattern)
+
+Commands validate their own inputs in the constructor. This keeps validation noise out of use case code.
+
+```java
 public record CreateBookingCommand(
     FieldId fieldId,
     UserId userId,
     DateRange dateRange
-) {}
+) {
+    public CreateBookingCommand {
+        requireNonNull(fieldId, "fieldId must not be null");
+        requireNonNull(userId, "userId must not be null");
+        requireNonNull(dateRange, "dateRange must not be null");
+    }
+}
 ```
 
-**Outgoing Ports (SPI):**
+### Outgoing Ports (SPI)
+
 ```java
 public interface LoadBookingPort {
     Optional<Booking> loadById(BookingId id);
@@ -434,156 +224,129 @@ public interface LoadBookingPort {
 public interface SaveBookingPort {
     BookingId save(Booking booking);
 }
-
-public interface SendNotificationPort {
-    void sendBookingConfirmation(Booking booking);
-}
 ```
 
-**Use Case Implementation:**
+### Use Case Implementation
+
+Use cases orchestrate domain objects and outgoing ports. They are annotated with `@Component` (or `@Service`) and `@Transactional`. The use case owns the transaction boundary — not the adapter.
+
 ```java
 @Service
 @Transactional
 @RequiredArgsConstructor
 public class CreateBookingService implements CreateBookingUseCase {
-    
+
     private final LoadBookingPort loadBookingPort;
     private final SaveBookingPort saveBookingPort;
     private final SendNotificationPort notificationPort;
-    
+
     @Override
     public BookingId createBooking(CreateBookingCommand command) {
-        // Check for conflicts
-        List<Booking> existingBookings = loadBookingPort
+        List<Booking> conflicts = loadBookingPort
             .loadByFieldAndDateRange(command.fieldId(), command.dateRange());
-        
-        if (!existingBookings.isEmpty()) {
+
+        if (!conflicts.isEmpty()) {
             throw new BookingConflictException("Field already booked for this time");
         }
-        
-        // Create domain object
+
         Booking booking = new Booking(
-            command.fieldId(),
-            command.userId(),
-            command.dateRange()
+            command.fieldId(), command.userId(), command.dateRange()
         );
-        
-        // Persist
+
         BookingId bookingId = saveBookingPort.save(booking);
-        
-        // Send notification
         notificationPort.sendBookingConfirmation(booking);
-        
         return bookingId;
     }
 }
 ```
 
-### 3. Adapter Layer (Infrastructure)
+### Locking Pattern (from Buckpal's SendMoneyService)
 
-**Web Adapter (Incoming):**
+For operations requiring concurrency control (like booking a time slot), acquire a lock before mutating state and release it after persisting:
+
+```java
+@Override
+public BookingId createBooking(CreateBookingCommand command) {
+    timeSlotLock.lockSlot(command.fieldId(), command.dateRange());
+    try {
+        // ... validate, create, persist
+        return bookingId;
+    } finally {
+        timeSlotLock.releaseSlot(command.fieldId(), command.dateRange());
+    }
+}
+```
+
+## 4. Adapter Layer Patterns
+
+### Web Adapter (Incoming)
+
 ```java
 @RestController
 @RequestMapping("/api/v1/bookings")
 @RequiredArgsConstructor
 public class BookingController {
-    
+
     private final CreateBookingUseCase createBookingUseCase;
-    private final GetBookingUseCase getBookingUseCase;
-    
+    private final GetBookingQuery getBookingQuery;
+
     @PostMapping
     public ResponseEntity<BookingResponse> createBooking(
             @Valid @RequestBody CreateBookingRequest request) {
-        
         CreateBookingCommand command = new CreateBookingCommand(
             new FieldId(request.fieldId()),
             new UserId(request.userId()),
             new DateRange(request.startTime(), request.endTime())
         );
-        
         BookingId bookingId = createBookingUseCase.createBooking(command);
-        
-        return ResponseEntity
-            .status(HttpStatus.CREATED)
+        return ResponseEntity.status(HttpStatus.CREATED)
             .body(new BookingResponse(bookingId.value()));
     }
-    
+
     @GetMapping("/{id}")
     public ResponseEntity<BookingResponse> getBooking(@PathVariable Long id) {
-        return getBookingUseCase.getBooking(new BookingId(id))
-            .map(this::toResponse)
+        return getBookingQuery.getBooking(new BookingId(id))
+            .map(BookingWebMapper::toResponse)
             .map(ResponseEntity::ok)
             .orElse(ResponseEntity.notFound().build());
-    }
-    
-    private BookingResponse toResponse(Booking booking) {
-        return new BookingResponse(
-            booking.getId().value(),
-            booking.getFieldId().value(),
-            booking.getUserId().value(),
-            booking.getDateRange().start(),
-            booking.getDateRange().end(),
-            booking.getStatus()
-        );
     }
 }
 ```
 
-**Persistence Adapter (Outgoing):**
+### Persistence Adapter (Outgoing)
+
 ```java
 @Component
 @RequiredArgsConstructor
 class BookingPersistenceAdapter implements LoadBookingPort, SaveBookingPort {
-    
+
     private final BookingRepository repository;
-    private final BookingMapper mapper;
-    
+    private final BookingPersistenceMapper mapper;
+
     @Override
     public Optional<Booking> loadById(BookingId id) {
-        return repository.findById(id.value())
-            .map(mapper::toDomain);
+        return repository.findById(id.value()).map(mapper::toDomain);
     }
-    
+
     @Override
     public List<Booking> loadByFieldAndDateRange(FieldId fieldId, DateRange dateRange) {
         return repository.findByFieldIdAndDateRange(
-                fieldId.value(),
-                dateRange.start(),
-                dateRange.end()
-            )
+                fieldId.value(), dateRange.start(), dateRange.end())
             .stream()
             .map(mapper::toDomain)
             .toList();
     }
-    
+
     @Override
     public BookingId save(Booking booking) {
-        BookingJpaEntity entity = mapper.toEntity(booking);
-        BookingJpaEntity saved = repository.save(entity);
+        BookingJpaEntity saved = repository.save(mapper.toEntity(booking));
         return new BookingId(saved.getId());
     }
 }
-
-@Repository
-interface BookingRepository extends JpaRepository<BookingJpaEntity, Long> {
-    
-    @Query("""
-        SELECT b FROM BookingJpaEntity b
-        WHERE b.fieldId = :fieldId
-        AND b.status != 'CANCELLED'
-        AND (
-            (b.startTime <= :end AND b.endTime >= :start)
-        )
-        """)
-    List<BookingJpaEntity> findByFieldIdAndDateRange(
-        @Param("fieldId") Long fieldId,
-        @Param("start") LocalDateTime start,
-        @Param("end") LocalDateTime end
-    );
-}
 ```
 
-**JPA Entity:**
+### JPA Entity (Adapter-only, never leaks into Domain)
+
 ```java
 @Entity
 @Table(name = "bookings", indexes = {
@@ -594,145 +357,123 @@ interface BookingRepository extends JpaRepository<BookingJpaEntity, Long> {
 @Setter
 @NoArgsConstructor
 public class BookingJpaEntity {
-    
+
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
-    
+
     @Column(name = "field_id", nullable = false)
     private Long fieldId;
-    
+
     @Column(name = "user_id", nullable = false)
     private Long userId;
-    
+
     @Column(name = "start_time", nullable = false)
     private LocalDateTime startTime;
-    
+
     @Column(name = "end_time", nullable = false)
     private LocalDateTime endTime;
-    
+
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
     private BookingStatus status;
-    
+
     @Version
     private Long version;
-    
+
     @CreatedDate
     @Column(nullable = false, updatable = false)
     private LocalDateTime createdAt;
-    
+
     @LastModifiedDate
     @Column(nullable = false)
     private LocalDateTime updatedAt;
 }
 ```
 
-### 4. Mapping Between Boundaries
+### Boundary Mapping (MapStruct)
 
-**MapStruct for DTO ↔ Domain:**
 ```java
 @Mapper(componentModel = "spring")
-public interface BookingMapper {
-    
+public interface BookingPersistenceMapper {
     Booking toDomain(BookingJpaEntity entity);
-    
     BookingJpaEntity toEntity(Booking domain);
-    
-    @Mapping(target = "id", source = "id.value")
-    @Mapping(target = "fieldId", source = "fieldId.value")
-    BookingResponse toResponse(Booking domain);
 }
 ```
 
-## Code Style & Best Practices
 
-### 1. Constructor Injection Only
+## 5. Code Style Rules
+
+### Constructor Injection Only
 
 ```java
-// ✅ CORRECT - Constructor Injection
+// ✅ CORRECT
 @Service
-@RequiredArgsConstructor  // Lombok generates constructor
+@RequiredArgsConstructor
 public class BookingService {
     private final BookingRepository repository;
     private final NotificationService notificationService;
 }
 
-// ❌ WRONG - Field Injection
-@Service
-public class BookingService {
-    @Autowired  // Don't do this!
-    private BookingRepository repository;
-}
+// ❌ FORBIDDEN — no field injection
+@Autowired private BookingRepository repository;
 ```
 
-### 2. Functional Programming Style
+### Functional Programming Over Imperative
 
 ```java
-// ✅ CORRECT - Functional style
+// ✅ Streams and Optionals
 public List<BookingResponse> getActiveBookings(Long userId) {
-    return repository.findByUserId(userId)
-        .stream()
-        .filter(booking -> booking.getStatus() != BookingStatus.CANCELLED)
+    return repository.findByUserId(userId).stream()
+        .filter(b -> b.getStatus() != BookingStatus.CANCELLED)
         .map(this::toResponse)
         .toList();
 }
 
-// ❌ WRONG - Imperative style
-public List<BookingResponse> getActiveBookings(Long userId) {
-    List<Booking> bookings = repository.findByUserId(userId);
-    List<BookingResponse> responses = new ArrayList<>();
-    for (Booking booking : bookings) {
-        if (booking.getStatus() != BookingStatus.CANCELLED) {
-            responses.add(toResponse(booking));
-        }
-    }
-    return responses;
-}
+// ❌ No imperative loops with mutable lists
 ```
 
-### 3. Optional Over Null Checks
+### Optional Over Null
 
 ```java
-// ✅ CORRECT - Use Optional
-public Optional<Booking> findBooking(BookingId id) {
-    return repository.findById(id.value())
-        .map(mapper::toDomain);
-}
-
+// ✅ Return Optional, chain with map/orElseThrow
 public BookingResponse getBookingOrThrow(BookingId id) {
     return findBooking(id)
         .map(this::toResponse)
         .orElseThrow(() -> new BookingNotFoundException(id));
 }
 
-// ❌ WRONG - Null checks
-public Booking findBooking(BookingId id) {
-    BookingJpaEntity entity = repository.findById(id.value());
-    if (entity == null) {
-        return null;
-    }
-    return mapper.toDomain(entity);
-}
+// ❌ Never return null from a method
 ```
 
-### 4. Lombok Usage (Sparingly)
+### Lombok — Sparingly
 
-**Recommended Lombok Annotations:**
-- `@Slf4j` - Logging
-- `@RequiredArgsConstructor` - Constructor injection
-- `@Getter` / `@Setter` - JPA entities only
-- `@NoArgsConstructor` - JPA entities only
+| Annotation | Where | Allowed? |
+|------------|-------|----------|
+| `@Slf4j` | Any Spring bean | ✅ |
+| `@RequiredArgsConstructor` | Services, adapters | ✅ |
+| `@Getter` / `@Setter` | JPA entities only | ✅ |
+| `@NoArgsConstructor` | JPA entities only | ✅ |
+| `@Data` | Anywhere | ❌ |
+| `@Builder` | Anywhere | ❌ Use Records |
+| `@AllArgsConstructor` | Anywhere | ❌ |
 
-**Avoid:**
-- `@Data` - Too much magic
-- `@Builder` - Use Records instead
-- `@AllArgsConstructor` - Prefer constructor with validation
+### Validation Strategy
 
-### 5. Validation
+- **Domain layer**: Validate in constructors and compact record constructors
+- **API layer**: Use Bean Validation annotations (`@NotNull`, `@Positive`, `@Future`)
+- **Both layers validate independently** — never trust the adapter to validate for the domain
 
 ```java
-// Domain validation in constructor
+// API-level validation (adapter)
+public record CreateBookingRequest(
+    @NotNull @Positive Long fieldId,
+    @NotNull @Positive Long userId,
+    @NotNull @Future LocalDateTime startTime,
+    @NotNull @Future LocalDateTime endTime
+) {}
+
+// Domain-level validation (domain)
 public record DateRange(LocalDateTime start, LocalDateTime end) {
     public DateRange {
         requireNonNull(start, "Start time cannot be null");
@@ -742,187 +483,302 @@ public record DateRange(LocalDateTime start, LocalDateTime end) {
         }
     }
 }
+```
 
-// API validation with Bean Validation
-public record CreateBookingRequest(
-    @NotNull(message = "Field ID is required")
-    @Positive
-    Long fieldId,
-    
-    @NotNull(message = "User ID is required")
-    @Positive
-    Long userId,
-    
-    @NotNull(message = "Start time is required")
-    @Future(message = "Start time must be in the future")
-    LocalDateTime startTime,
-    
-    @NotNull(message = "End time is required")
-    @Future(message = "End time must be in the future")
-    LocalDateTime endTime
-) {
-    @AssertTrue(message = "End time must be after start time")
-    public boolean isValidTimeRange() {
-        return startTime != null && endTime != null && 
-               endTime.isAfter(startTime);
+## 6. Testing Standards (rieckpil Masterclass)
+
+### Test Pyramid
+
+```
+        /\
+       /E2E\      ← Few: Full @SpringBootTest (only for critical end-to-end flows)
+      /------\
+     /  Slice  \  ← Some: @WebMvcTest, @DataJpaTest (fast, focused)
+    /----------\
+   /   Unit     \ ← Many: Pure Java, no Spring context (fastest)
+  /--------------\
+```
+
+### Critical Testing Rules
+
+| Rule | Detail |
+|------|--------|
+| No H2 for integration tests | Use Testcontainers with real PostgreSQL |
+| Avoid @SpringBootTest | Use slice tests (@WebMvcTest, @DataJpaTest) unless testing full flow |
+| Test naming | `should[Behavior]When[Condition]()` |
+| Assertions | Use AssertJ fluent assertions |
+| Coverage target | 80%+ unit test coverage |
+
+### Which Test Slice to Use
+
+| What you're testing | Annotation | Mocking |
+|---------------------|-----------|---------|
+| Controller endpoints | `@WebMvcTest` | `@MockBean` for use cases |
+| JPA repositories / queries | `@DataJpaTest` + Testcontainers | Real PostgreSQL |
+| JSON serialization | `@JsonTest` | None |
+| REST clients (RestTemplate) | `@RestClientTest` | `MockRestServiceServer` |
+| External HTTP APIs | `@SpringBootTest` + `@AutoConfigureWireMock` | WireMock stubs |
+| Kafka / async messaging | `@SpringBootTest` + Testcontainers | Awaitility for assertions |
+| Full end-to-end flow | `@SpringBootTest(RANDOM_PORT)` + Testcontainers | `TestRestTemplate` |
+
+### Unit Tests (Domain Logic)
+
+No Spring context. Pure Java. Fast.
+
+```java
+class BookingTest {
+
+    @Test
+    void shouldRejectBookingInThePast() {
+        LocalDateTime pastDate = LocalDateTime.now().minusDays(1);
+        assertThatThrownBy(() -> new Booking(
+            new FieldId(1L), new UserId(1L),
+            new DateRange(pastDate, pastDate.plusHours(1))
+        )).isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("past");
     }
 }
 ```
 
-## Spring Cloud Microservices Components
+### Slice Tests
 
-## Spring Cloud Microservices Components
+**Controller (@WebMvcTest)**
+```java
+@WebMvcTest(BookingController.class)
+class BookingControllerTest {
 
-**Essential Infrastructure Services:**
+    @Autowired private MockMvc mockMvc;
+    @MockBean private CreateBookingUseCase createBookingUseCase;
 
-1. **Config Server** (Spring Cloud Config)
-   - Centralized configuration management
-   - Environment-specific configurations
-   - Git-backed configuration repository
-   - Dynamic configuration refresh
+    @Test
+    void shouldReturn201WhenBookingCreated() throws Exception {
+        given(createBookingUseCase.createBooking(any()))
+            .willReturn(new BookingId(1L));
 
-2. **Service Discovery** (Eureka Server)
-   - Service registration and discovery
-   - Client-side load balancing
-   - Health checking
-   - Failover support
+        mockMvc.perform(post("/api/v1/bookings")
+                .contentType(APPLICATION_JSON)
+                .content("""
+                    {"fieldId":1,"userId":1,"startTime":"2026-03-01T10:00","endTime":"2026-03-01T11:30"}
+                    """))
+            .andExpect(status().isCreated())
+            .andExpect(jsonPath("$.id").value(1));
+    }
+}
+```
 
-3. **API Gateway** (Spring Cloud Gateway)
-   - Single entry point for all clients
-   - Request routing and filtering
-   - Authentication/Authorization
-   - Rate limiting and circuit breaking
-   - Request/Response transformation
+**Repository (@DataJpaTest + Testcontainers)**
+```java
+@DataJpaTest
+@AutoConfigureTestDatabase(replace = Replace.NONE)
+@Testcontainers
+class BookingRepositoryTest {
 
-4. **Circuit Breaker** (Resilience4j)
-   - Fault tolerance patterns
-   - Fallback mechanisms
-   - Bulkhead isolation
-   - Retry and timeout strategies
+    @Container
+    static PostgreSQLContainer<?> postgres =
+        new PostgreSQLContainer<>("postgres:15-alpine");
 
-5. **Distributed Tracing** (Micrometer + OpenTelemetry)
-   - Request correlation across services
-   - Performance monitoring
-   - Integration with Zipkin/Jaeger
+    @DynamicPropertySource
+    static void props(DynamicPropertyRegistry registry) {
+        registry.add("spring.datasource.url", postgres::getJdbcUrl);
+        registry.add("spring.datasource.username", postgres::getUsername);
+        registry.add("spring.datasource.password", postgres::getPassword);
+    }
 
-## Technology Stack Recommendations
+    @Autowired private BookingRepository repository;
 
-### Core Framework
-- **Spring Boot 3.4+** with Java 21+
-- **Spring Cloud 2023.x** (Hoxton/2020.x successor)
-- **Jakarta EE 9+** (javax → jakarta namespace)
+    @Test
+    void shouldFindConflictingBookings() {
+        // test with real PostgreSQL
+    }
+}
+```
 
-### Data Access
-- **Spring Data JPA** with Hibernate 6.x
-- **Flyway/Liquibase** for database migrations
-- **Connection Pooling**: HikariCP (default in Spring Boot)
+### Integration Tests (Sparingly)
 
-### API & Documentation
-- **SpringDoc OpenAPI 3** (Swagger UI)
-  - Automatic API documentation
-  - JSR-303 validation support (@NotNull, @Min, @Max, @Size)
-  - OAuth 2 integration
+```java
+@SpringBootTest(webEnvironment = WebEnvironment.RANDOM_PORT)
+@Testcontainers
+class BookingIntegrationTest {
 
-### Messaging & Events
-- **Apache Kafka** or **RabbitMQ**
-- **Spring Cloud Stream** for abstraction
-- Event-driven architecture support
+    @Container
+    static PostgreSQLContainer<?> postgres =
+        new PostgreSQLContainer<>("postgres:15-alpine");
 
-### Observability
-- **Micrometer** for metrics
-- **Prometheus** for metrics collection
-- **Grafana** for visualization
-- **Zipkin/Jaeger** for distributed tracing
-- **Spring Boot Actuator** for health checks
+    @DynamicPropertySource
+    static void props(DynamicPropertyRegistry registry) {
+        registry.add("spring.datasource.url", postgres::getJdbcUrl);
+        registry.add("spring.datasource.username", postgres::getUsername);
+        registry.add("spring.datasource.password", postgres::getPassword);
+    }
 
-### Security
-- **Spring Security 6.x**
-- **OAuth 2.0 / OpenID Connect**
-- **Keycloak** for identity management
-- **JWT** for stateless authentication
+    @Autowired private TestRestTemplate restTemplate;
 
-### Testing
-- **JUnit 5** for unit tests
-- **Mockito** for mocking
-- **Testcontainers** for integration tests (MANDATORY for DB tests)
-- **AssertJ** for fluent assertions
-- **WireMock** for HTTP API mocking
-- **Awaitility** for async testing
-- **@WebMvcTest** for controller slice tests
-- **@DataJpaTest** for repository slice tests
-- **NO H2** - Use real databases via Testcontainers
+    @Test
+    void shouldCreateBookingEndToEnd() {
+        ResponseEntity<BookingResponse> response = restTemplate.postForEntity(
+            "/api/v1/bookings", request, BookingResponse.class);
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+    }
+}
+```
 
-### Code Quality & Analysis
-- **Checkstyle** for code style enforcement
-- **JaCoCo** for code coverage (minimum 80%)
-- **SonarQube** for static analysis
-- **OWASP Dependency Check** for vulnerability scanning
+### External API Testing (WireMock)
 
-### Development Accelerators
-- **Lombok** (sparingly: @Slf4j, @RequiredArgsConstructor only)
-- **MapStruct** for DTO ↔ Entity mapping
-  - Type-safe, compile-time generation
-  - Better performance than reflection-based mappers
-- **Java Records** for DTOs and Value Objects
+```java
+@SpringBootTest
+@AutoConfigureWireMock(port = 0)
+class StripePaymentAdapterTest {
 
-## Best Practices Summary
+    @Test
+    void shouldProcessPaymentSuccessfully() {
+        stubFor(post("/payments").willReturn(aResponse()
+            .withStatus(200)
+            .withBody("{\"status\":\"SUCCESS\"}")));
 
-### Architecture
-1. **Hexagonal Architecture**: Strict layer separation (Domain → Application → Adapter)
-2. **Dependency Inversion**: Dependencies point inward toward domain
-3. **Ports & Adapters**: Interfaces in Application, implementations in Adapter
-4. **Immutability**: Use Records for DTOs and Value Objects
+        PaymentResult result = paymentAdapter.processPayment(/*...*/);
+        assertThat(result.status()).isEqualTo(PaymentStatus.SUCCESS);
+    }
+}
+```
 
-### Testing
-1. **Test Pyramid**: Many unit tests, some slice tests, few E2E tests
-2. **Testcontainers**: Always use real databases for integration tests
-3. **Slice Testing**: @WebMvcTest for controllers, @DataJpaTest for repositories
-4. **No @SpringBootTest**: Unless absolutely necessary (slow)
+### JSON Serialization Testing (@JsonTest)
 
-### Code Style
-1. **Constructor Injection**: Only use constructor injection
-2. **Functional Style**: Streams and Optionals over imperative code
-3. **No Null**: Use Optional instead of null returns
-4. **Lombok Sparingly**: Only @Slf4j and @RequiredArgsConstructor
+Test Jackson annotations, custom serializers, and JSON format without loading the full context.
 
-### Domain Design
-1. **Rich Domain Models**: Business logic in domain entities
-2. **Value Objects**: Immutable Records with validation
-3. **Use Cases**: One interface per use case
-4. **No Anemic Models**: Avoid entities with only getters/setters
+```java
+@JsonTest
+class BookingResponseTest {
 
-## References
+    @Autowired
+    private JacksonTester<BookingResponse> jacksonTester;
 
-**Primary Sources:**
-- [Buckpal (thombergs)](https://github.com/thombergs/buckpal) - Hexagonal Architecture
-- [Testing Spring Boot Applications Masterclass (rieckpil)](https://github.com/rieckpil/testing-spring-boot-applications-masterclass) - Testing standards
-- [Spring PetClinic Microservices](https://github.com/spring-petclinic/spring-petclinic-microservices) - Spring Cloud patterns
-- [Spring Boot Microservice Best Practices](https://github.com/abhisheksr01/spring-boot-microservice-best-practices) - DevSecOps
+    @Test
+    void shouldSerializeBookingResponse() throws IOException {
+        BookingResponse response = new BookingResponse(1L, "CONFIRMED", "2026-03-01T10:00");
+        JsonContent<BookingResponse> result = jacksonTester.write(response);
 
-**Additional Resources:**
-- Get Your Hands Dirty on Clean Architecture (Tom Hombergs)
-- [Spring Boot Test Slices](https://rieckpil.de/spring-boot-test-slices-overview-and-usage/)
-- [Testcontainers Documentation](https://testcontainers.com/)
-- Spring Boot 3 Documentation: https://spring.io/projects/spring-boot
-- Microservices Patterns: https://microservices.io/patterns/
+        assertThat(result).extractingJsonPathNumberValue("$.id").isEqualTo(1);
+        assertThat(result).extractingJsonPathStringValue("$.status").isEqualTo("CONFIRMED");
+    }
+}
+```
 
----
+### HTTP Client Testing (@RestClientTest)
 
-*Content rephrased for compliance with licensing restrictions. Original sources cited above.*
+Test REST clients in isolation with a mock server — no WireMock needed.
 
-**application.yml Structure:**
+```java
+@RestClientTest(WeatherApiClient.class)
+class WeatherApiClientTest {
+
+    @Autowired private WeatherApiClient client;
+    @Autowired private MockRestServiceServer mockServer;
+
+    @Test
+    void shouldReturnWeatherForecast() {
+        mockServer.expect(requestTo("/forecast?lat=40.0&lon=3.0"))
+            .andRespond(withSuccess("{\"temp\":22}", APPLICATION_JSON));
+
+        WeatherForecast result = client.getForecast(40.0, 3.0);
+        assertThat(result.temp()).isEqualTo(22);
+    }
+}
+```
+
+### Async Testing (Awaitility)
+
+```java
+@Test
+void shouldSendNotificationAfterBookingCreated() {
+    eventPublisher.publish(new BookingCreatedEvent(/*...*/));
+
+    await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+        verify(notificationService).sendEmail(any())
+    );
+}
+```
+
+
+## 7. API Design Standards
+
+### Spring Cloud Infrastructure (PetClinic Microservices)
+
+When deploying as microservices, use these Spring Cloud components:
+
+| Component | Technology | Purpose |
+|-----------|-----------|---------|
+| Config Server | Spring Cloud Config | Centralized, Git-backed configuration |
+| Service Discovery | Eureka Server | Service registration and client-side load balancing |
+| API Gateway | Spring Cloud Gateway | Routing, auth, rate limiting |
+| Circuit Breaker | Resilience4j | Fault tolerance, fallbacks, bulkhead isolation |
+| Distributed Tracing | Micrometer + OpenTelemetry | Request correlation across services |
+
+### RESTful Conventions
+
+```
+GET    /api/v1/bookings          - List (paginated)
+GET    /api/v1/bookings/{id}     - Get by ID
+POST   /api/v1/bookings          - Create
+PUT    /api/v1/bookings/{id}     - Full update
+PATCH  /api/v1/bookings/{id}     - Partial update
+DELETE /api/v1/bookings/{id}     - Delete
+```
+
+### Error Response Format
+
+```json
+{
+  "timestamp": "2026-02-06T10:30:00Z",
+  "status": 400,
+  "error": "Bad Request",
+  "message": "Validation failed",
+  "path": "/api/v1/bookings",
+  "errors": [
+    { "field": "startTime", "message": "Start time must be in the future" }
+  ]
+}
+```
+
+### Global Exception Handler
+
+```java
+@RestControllerAdvice
+@Slf4j
+public class GlobalExceptionHandler {
+
+    @ExceptionHandler(ResourceNotFoundException.class)
+    public ResponseEntity<ErrorResponse> handleNotFound(ResourceNotFoundException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+            .body(new ErrorResponse(ex.getMessage()));
+    }
+
+    @ExceptionHandler(BookingConflictException.class)
+    public ResponseEntity<ErrorResponse> handleConflict(BookingConflictException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+            .body(new ErrorResponse(ex.getMessage()));
+    }
+
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<ErrorResponse> handleValidation(MethodArgumentNotValidException ex) {
+        List<FieldError> errors = ex.getBindingResult().getFieldErrors().stream()
+            .map(e -> new FieldError(e.getField(), e.getDefaultMessage()))
+            .toList();
+        return ResponseEntity.badRequest()
+            .body(new ErrorResponse("Validation failed", errors));
+    }
+}
+```
+
+## 8. Infrastructure & Operations
+
+### Configuration
+
 ```yaml
 spring:
   application:
     name: field-booking-service
   profiles:
-    active: ${SPRING_PROFILES_ACTIVE:dev}
-  cloud:
-    config:
-      uri: ${CONFIG_SERVER_URL:http://localhost:8888}
-      fail-fast: true
-      retry:
-        max-attempts: 6
+    active: ${SPRING_PROFILES_ACTIVE:local}
 
 server:
   port: ${SERVER_PORT:8080}
@@ -934,420 +790,167 @@ management:
     web:
       exposure:
         include: health,info,metrics,prometheus
-  metrics:
-    export:
-      prometheus:
-        enabled: true
 ```
 
 **Profile Strategy:**
-- `dev`: Local development
-- `test`: Integration testing
-- `staging`: Pre-production
-- `prod`: Production
+- `local` — Docker Compose infrastructure
+- `dev` — DigitalOcean managed services
+- `staging` — Pre-production (mirrors prod)
+- `prod` — Production on Kubernetes
 
-### 2. API Design
+### Database
 
-**RESTful Conventions:**
-```
-GET    /api/v1/bookings          - List all bookings
-GET    /api/v1/bookings/{id}     - Get booking by ID
-POST   /api/v1/bookings          - Create new booking
-PUT    /api/v1/bookings/{id}     - Update booking
-PATCH  /api/v1/bookings/{id}     - Partial update
-DELETE /api/v1/bookings/{id}     - Delete booking
-```
+- Flyway for migrations (never Liquibase in this project)
+- Optimistic locking via `@Version`
+- Proper composite indexes for query patterns
+- HikariCP connection pooling (Spring Boot default)
 
-**Response Standards:**
-- Use proper HTTP status codes
-- Consistent error response format
-- HATEOAS links for discoverability
-- Pagination for collections
-- API versioning (URL or header-based)
+### Observability
 
-**Error Response Format:**
-```json
-{
-  "timestamp": "2026-02-06T10:30:00Z",
-  "status": 400,
-  "error": "Bad Request",
-  "message": "Validation failed",
-  "path": "/api/v1/bookings",
-  "errors": [
-    {
-      "field": "startDate",
-      "message": "Start date cannot be in the past"
-    }
-  ]
-}
-```
+- Micrometer + Prometheus for metrics
+- OpenTelemetry + Jaeger for distributed tracing
+- Loki for log aggregation
+- Spring Boot Actuator for health endpoints
+- Structured logging with correlation IDs
 
-### 3. Database Design
-
-**Best Practices:**
-- Use database migrations (Flyway/Liquibase)
-- Optimistic locking for concurrency (@Version)
-- Soft deletes for audit trails
-- Proper indexing strategy
-- Connection pooling configuration
-
-**JPA Entity Example:**
-```java
-@Entity
-@Table(name = "bookings", indexes = {
-    @Index(name = "idx_booking_date", columnList = "booking_date"),
-    @Index(name = "idx_user_id", columnList = "user_id")
-})
-@Data
-@Builder
-public class Booking {
-    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
-    
-    @Version
-    private Long version;
-    
-    @Column(nullable = false)
-    private LocalDateTime bookingDate;
-    
-    @Column(nullable = false)
-    private String status;
-    
-    @CreatedDate
-    private LocalDateTime createdAt;
-    
-    @LastModifiedDate
-    private LocalDateTime updatedAt;
-    
-    @Column(nullable = false)
-    private boolean deleted = false;
-}
-```
-
-### 4. Exception Handling
-
-**Global Exception Handler:**
-```java
-@RestControllerAdvice
-public class GlobalExceptionHandler {
-    
-    @ExceptionHandler(ResourceNotFoundException.class)
-    public ResponseEntity<ErrorResponse> handleNotFound(
-        ResourceNotFoundException ex) {
-        return ResponseEntity
-            .status(HttpStatus.NOT_FOUND)
-            .body(ErrorResponse.builder()
-                .message(ex.getMessage())
-                .build());
-    }
-    
-    @ExceptionHandler(MethodArgumentNotValidException.class)
-    public ResponseEntity<ErrorResponse> handleValidation(
-        MethodArgumentNotValidException ex) {
-        // Handle validation errors
-    }
-}
-```
-
-### 5. Logging Strategy
-
-**Structured Logging:**
 ```java
 @Slf4j
 @Service
-public class BookingService {
-    
-    public Booking createBooking(BookingRequest request) {
-        log.info("Creating booking for user: {}", request.getUserId());
-        try {
-            // Business logic
-            log.debug("Booking created successfully: {}", booking.getId());
-            return booking;
-        } catch (Exception e) {
-            log.error("Failed to create booking", e);
-            throw new BookingException("Booking creation failed", e);
-        }
+public class CreateBookingService {
+    public BookingId createBooking(CreateBookingCommand command) {
+        log.info("Creating booking for field={} user={}", command.fieldId(), command.userId());
+        // ...
+        log.debug("Booking created: {}", bookingId);
+        return bookingId;
     }
 }
 ```
 
-**Log Levels:**
-- ERROR: System errors requiring immediate attention
-- WARN: Potential issues, degraded functionality
-- INFO: Important business events
-- DEBUG: Detailed diagnostic information
-- TRACE: Very detailed diagnostic information
+### Security
 
-### 6. Testing Strategy
-
-**Test Pyramid:**
-```
-        /\
-       /E2E\      ← Few (Cucumber/Integration)
-      /------\
-     /  API   \   ← Some (REST API tests)
-    /----------\
-   /   Unit     \ ← Many (JUnit + Mockito)
-  /--------------\
-```
-
-**Unit Test Example:**
-```java
-@ExtendWith(MockitoExtension.class)
-class BookingServiceTest {
-    
-    @Mock
-    private BookingRepository repository;
-    
-    @InjectMocks
-    private BookingService service;
-    
-    @Test
-    void shouldCreateBooking() {
-        // Given
-        BookingRequest request = BookingRequest.builder()
-            .userId(1L)
-            .fieldId(1L)
-            .build();
-        
-        // When
-        Booking result = service.createBooking(request);
-        
-        // Then
-        assertNotNull(result);
-        verify(repository).save(any(Booking.class));
-    }
-}
-```
-
-**Integration Test with TestContainers:**
-```java
-@SpringBootTest
-@Testcontainers
-class BookingIntegrationTest {
-    
-    @Container
-    static PostgreSQLContainer<?> postgres = 
-        new PostgreSQLContainer<>("postgres:15-alpine");
-    
-    @Autowired
-    private BookingRepository repository;
-    
-    @Test
-    void shouldPersistBooking() {
-        // Test with real database
-    }
-}
-```
-
-### 7. Security Best Practices
-
-**Authentication & Authorization:**
 ```java
 @Configuration
 @EnableWebSecurity
 public class SecurityConfig {
-    
+
     @Bean
-    public SecurityFilterChain filterChain(HttpSecurity http) {
+    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
         return http
-            .csrf(csrf -> csrf.disable())
+            .csrf(AbstractHttpConfigurer::disable)
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers("/actuator/health").permitAll()
-                .requestMatchers("/api/v1/bookings/**")
-                    .hasRole("USER")
-                .anyRequest().authenticated()
+                .requestMatchers("/api/v1/**").authenticated()
+                .anyRequest().denyAll()
             )
-            .oauth2ResourceServer(OAuth2ResourceServerConfigurer::jwt)
+            .oauth2ResourceServer(oauth2 -> oauth2.jwt(Customizer.withDefaults()))
             .build();
     }
 }
 ```
 
-**Security Headers:**
-- X-Content-Type-Options: nosniff
-- X-Frame-Options: DENY
-- X-XSS-Protection: 1; mode=block
-- Strict-Transport-Security: max-age=31536000
+### Caching (Redis)
 
-### 8. Performance Optimization
-
-**Caching Strategy:**
 ```java
 @Service
-@CacheConfig(cacheNames = "bookings")
-public class BookingService {
-    
-    @Cacheable(key = "#id")
-    public Booking getBooking(Long id) {
-        return repository.findById(id)
-            .orElseThrow(() -> new ResourceNotFoundException());
+@CacheConfig(cacheNames = "courtAvailability")
+@RequiredArgsConstructor
+public class AvailabilityService {
+
+    @Cacheable(key = "#fieldId + '-' + #date")
+    public List<TimeSlot> getAvailability(Long fieldId, LocalDate date) {
+        return repository.findAvailableSlots(fieldId, date);
     }
-    
-    @CacheEvict(key = "#id")
-    public void deleteBooking(Long id) {
-        repository.deleteById(id);
+
+    @CacheEvict(key = "#fieldId + '-' + #date")
+    public void invalidateAvailability(Long fieldId, LocalDate date) {
+        // Cache cleared on booking changes
     }
 }
 ```
 
-**Database Optimization:**
-- Use pagination for large datasets
-- Implement query optimization (N+1 problem)
-- Use database connection pooling
-- Implement read replicas for read-heavy operations
+### Containerization
 
-### 9. Containerization
-
-**Multi-stage Dockerfile:**
 ```dockerfile
-# Build stage
 FROM gradle:8.5-jdk21 AS builder
 WORKDIR /app
 COPY . .
 RUN gradle clean build -x test
 
-# Runtime stage
 FROM eclipse-temurin:21-jre-alpine
+RUN addgroup -S app && adduser -S app -G app
+USER app
 WORKDIR /app
 COPY --from=builder /app/build/libs/*.jar app.jar
 EXPOSE 8080
 ENTRYPOINT ["java", "-jar", "app.jar"]
 ```
 
-**Docker Best Practices:**
-- Use multi-stage builds
-- Minimize layer count
-- Use specific base image versions
-- Run as non-root user
-- Scan images for vulnerabilities (Trivy)
+### CI/CD Pipeline Stages
 
-### 10. DevSecOps Integration
+1. Checkout → 2. Build → 3. Unit tests → 4. Static analysis (Checkstyle, SonarQube) → 5. Security scan (OWASP, Trivy) → 6. Docker build → 7. Integration tests (Testcontainers) → 8. Push image → 9. Deploy staging → 10. Smoke tests → 11. Deploy production
 
-**Security Scanning:**
-- OWASP Dependency Check (vulnerabilities)
-- Trivy (container scanning)
-- Snyk (dependency & IaC scanning)
-- OWASP ZAP (penetration testing)
-- Hadolint (Dockerfile linting)
+## 9. Technology Stack
 
-**CI/CD Pipeline Stages:**
-1. Code checkout
-2. Build & compile
-3. Unit tests
-4. Static code analysis
-5. Security scanning
-6. Build Docker image
-7. Integration tests
-8. Deploy to staging
-9. Smoke tests
-10. Deploy to production
+| Category | Technology |
+|----------|-----------|
+| Framework | Spring Boot 3.4+, Java 21+ |
+| Cloud | Spring Cloud 2023.x |
+| Namespace | Jakarta EE 9+ |
+| Data | Spring Data JPA, Hibernate 6.x, Flyway |
+| API Docs | SpringDoc OpenAPI 3 |
+| Messaging | Apache Kafka, Spring Cloud Stream |
+| Metrics | Micrometer, Prometheus, Grafana |
+| Tracing | OpenTelemetry, Jaeger |
+| Security | Spring Security 6.x, OAuth 2.0, JWT |
+| Testing | JUnit 5, Mockito, AssertJ, JSONAssert, Testcontainers, WireMock, Awaitility, LocalStack |
+| Quality | Checkstyle, JaCoCo (80%+), SonarQube, OWASP Dependency Check |
+| Mapping | MapStruct |
+| Logging | @Slf4j (Lombok) |
+| DI | Constructor injection via @RequiredArgsConstructor |
 
-## Monitoring & Observability
+## 10. Quick Reference — Decision Rules
 
-### Custom Metrics with Micrometer
+| When you need to... | Do this |
+|---------------------|---------|
+| Create a DTO or Value Object | Use a Java Record with compact constructor validation |
+| Add business logic | Put it in the Domain entity, not in a service |
+| Access the database | Define an outgoing Port interface, implement in a Persistence Adapter |
+| Expose an API | Define an incoming Port (Use Case), implement in Application service, call from Web Adapter |
+| Test a controller | Use @WebMvcTest with @MockBean for use cases |
+| Test a repository | Use @DataJpaTest + Testcontainers (real PostgreSQL) |
+| Test domain logic | Plain JUnit 5, no Spring context |
+| Test an external API | Use WireMock or @RestClientTest |
+| Test JSON serialization | Use @JsonTest |
+| Test async behavior | Use Awaitility |
+| Inject a dependency | Constructor injection only (@RequiredArgsConstructor) |
+| Handle nulls | Return Optional, never null |
+| Write a loop | Use Stream API instead |
+| Create a new entity | Constructor (no ID) |
+| Load entity from DB | Static factory `withId(...)` method |
+| Lock a shared resource | Acquire lock → mutate → persist → release lock (Buckpal pattern) |
 
-```java
-@Service
-public class BookingService {
-    
-    private final Counter bookingCounter;
-    private final Timer bookingTimer;
-    
-    public BookingService(MeterRegistry registry) {
-        this.bookingCounter = Counter.builder("bookings.created")
-            .description("Total bookings created")
-            .tag("service", "booking")
-            .register(registry);
-            
-        this.bookingTimer = Timer.builder("bookings.creation.time")
-            .description("Time to create booking")
-            .register(registry);
-    }
-    
-    @Timed(value = "bookings.create", percentiles = {0.5, 0.95, 0.99})
-    public Booking createBooking(BookingRequest request) {
-        return bookingTimer.record(() -> {
-            Booking booking = // create booking
-            bookingCounter.increment();
-            return booking;
-        });
-    }
-}
-```
+### When to Take Shortcuts (from Buckpal)
 
-### Health Checks
+Not every feature needs full hexagonal ceremony. Buckpal explicitly discusses "taking shortcuts consciously":
 
-```java
-@Component
-public class DatabaseHealthIndicator implements HealthIndicator {
-    
-    @Override
-    public Health health() {
-        try {
-            // Check database connectivity
-            return Health.up()
-                .withDetail("database", "Available")
-                .build();
-        } catch (Exception e) {
-            return Health.down()
-                .withDetail("error", e.getMessage())
-                .build();
-        }
-    }
-}
-```
+| Shortcut | When acceptable |
+|----------|----------------|
+| Skip incoming port interface | Simple CRUD with no business logic |
+| Skip mapping between layers | When domain and persistence models are identical |
+| Use @Service directly without port | Internal utility services with no external adapters |
+| Use @SpringBootTest | Only for smoke tests or critical E2E paths |
 
-## Deployment Considerations
-
-### Kubernetes Deployment
-
-**Key Resources:**
-- Deployment: Application pods
-- Service: Internal load balancing
-- Ingress: External access
-- ConfigMap: Configuration data
-- Secret: Sensitive data
-- HPA: Horizontal Pod Autoscaling
-
-**Resource Limits:**
-```yaml
-resources:
-  requests:
-    memory: "512Mi"
-    cpu: "500m"
-  limits:
-    memory: "1Gi"
-    cpu: "1000m"
-```
-
-### Environment Variables
-
-**Essential Variables:**
-- SPRING_PROFILES_ACTIVE
-- DATABASE_URL
-- REDIS_URL
-- KAFKA_BOOTSTRAP_SERVERS
-- CONFIG_SERVER_URL
-- EUREKA_SERVER_URL
-- JWT_SECRET
-- API_KEYS
+The key is to take shortcuts **consciously** and document the trade-off, not accidentally.
 
 ## References
 
-**Source Repositories:**
-- [Spring PetClinic Microservices](https://github.com/spring-petclinic/spring-petclinic-microservices) - Official Spring example
-- [Spring Boot Microservice Best Practices](https://github.com/abhisheksr01/spring-boot-microservice-best-practices) - Comprehensive patterns
-- [Learn Microservices with Spring Boot 3](https://github.com/Book-Microservices-v3) - Book examples
-- [Baeldung Clean Architecture](https://www.baeldung.com/spring-boot-clean-architecture) - Clean architecture guide
-
-**Additional Resources:**
-- Spring Boot 3 Documentation: https://spring.io/projects/spring-boot
-- Spring Cloud Documentation: https://spring.io/projects/spring-cloud
-- Microservices Patterns: https://microservices.io/patterns/
-- 12-Factor App: https://12factor.net/
+- [Buckpal — thombergs](https://github.com/thombergs/buckpal) — Hexagonal Architecture reference
+- [Hexagonal Architecture with Java and Spring — reflectoring.io](https://reflectoring.io/spring-hexagonal/) — Buckpal companion article
+- [Testing Spring Boot Applications Masterclass — rieckpil](https://github.com/rieckpil/testing-spring-boot-applications-masterclass) — Testing standards
+- [Spring Boot Test Slices — rieckpil](https://rieckpil.de/spring-boot-test-slices-overview-and-usage/) — Complete slice test guide
+- [Spring PetClinic Microservices](https://github.com/spring-petclinic/spring-petclinic-microservices) — Spring Cloud patterns
+- [Spring Boot Microservice Best Practices — abhisheksr01](https://github.com/abhisheksr01/spring-boot-microservice-best-practices) — DevSecOps
+- [Testcontainers](https://testcontainers.com/)
 
 ---
-
 *Content rephrased for compliance with licensing restrictions. Original sources cited above.*
