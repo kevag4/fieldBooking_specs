@@ -942,15 +942,218 @@ Not every feature needs full hexagonal ceremony. Buckpal explicitly discusses "t
 
 The key is to take shortcuts **consciously** and document the trade-off, not accidentally.
 
+## 11. Reference Repository Catalog
+
+> The following GitHub repositories serve as state-of-the-art references for building production-grade Spring Boot 3.x / Java 21+ microservices. Each repository is selected for specific architectural patterns relevant to the field booking platform. When implementing, cross-reference the appropriate repository for the pattern you need.
+
+### Tier 1: Primary Architecture References (Already Codified Above)
+
+| Repository | Stars | Focus Area | What to Extract |
+|-----------|-------|-----------|----------------|
+| [thombergs/buckpal](https://github.com/thombergs/buckpal) | ~2.5k ⭐ | Hexagonal Architecture | Package structure, ports & adapters, use case pattern, self-validating commands, conscious shortcuts, dependency inversion |
+| [spring-petclinic/spring-petclinic-microservices](https://github.com/spring-petclinic/spring-petclinic-microservices) | ~1.5k ⭐ | Spring Cloud Microservices | Service discovery (Eureka), API Gateway, Config Server, Resilience4j circuit breakers, Micrometer tracing, OpenTelemetry, Docker Compose orchestration |
+| [rieckpil/testing-spring-boot-applications-masterclass](https://github.com/rieckpil/testing-spring-boot-applications-masterclass) | ~500 ⭐ | Testing Standards | @WebMvcTest, @DataJpaTest, @JsonTest, @RestClientTest, Testcontainers with real PostgreSQL, WireMock for external APIs, Awaitility for async, test naming conventions |
+| [abhisheksr01/spring-boot-microservice-best-practices](https://github.com/abhisheksr01/spring-boot-microservice-best-practices) | ~300 ⭐ | DevSecOps & CI/CD | Java 21+, Gradle build, Checkstyle, JaCoCo, Hadolint, OWASP dependency check, Docker image vulnerability scanning, Kubernetes deployment, MapStruct, WireMock, Cucumber E2E tests |
+
+### Tier 2: Microservice Patterns & Event-Driven Architecture
+
+| Repository | Stars | Focus Area | What to Extract |
+|-----------|-------|-----------|----------------|
+| [microservices-patterns/ftgo-application](https://github.com/microservices-patterns/ftgo-application) | ~3.7k ⭐ | Microservice Patterns (Chris Richardson) | Saga orchestration, event-driven communication, transactional outbox pattern, API gateway, service decomposition by business capability, contract testing between services |
+| [eventuate-tram/eventuate-tram-sagas](https://github.com/eventuate-tram/eventuate-tram-sagas) | ~400 ⭐ | Saga Pattern | Orchestration-based sagas for distributed transactions, compensating transactions, JDBC-based transactional messaging — directly applicable to booking + payment atomicity |
+| [GoogleCloudPlatform/microservices-demo](https://github.com/GoogleCloudPlatform/microservices-demo) | ~17k ⭐ | Cloud-Native Microservices on Kubernetes | 11 polyglot microservices, Kubernetes manifests, Istio service mesh integration, gRPC communication, Locust load testing, Terraform deployment, Kustomize variations |
+
+### Tier 3: Kubernetes, Observability & Infrastructure
+
+| Repository | Stars | Focus Area | What to Extract |
+|-----------|-------|-----------|----------------|
+| [piomin/sample-spring-microservices-kubernetes](https://github.com/piomin/sample-spring-microservices-kubernetes) | ~414 ⭐ | Spring Cloud Kubernetes | Spring Cloud Kubernetes config, OpenFeign for inter-service calls, Spring Cloud Gateway on K8s, health probes, readiness/liveness configuration — directly applicable to DOKS deployment |
+| [spring-projects/spring-modulith](https://github.com/spring-projects/spring-modulith) | ~507 ⭐ | Modular Monolith / DDD Boundaries | Module boundary enforcement, event-driven module communication, architecture verification tests — useful for enforcing domain boundaries within each service |
+| [ali-bouali/spring-boot-3-jwt-security](https://github.com/ali-bouali/spring-boot-3-jwt-security) | ~1.3k ⭐ | Spring Security 6 + JWT | Spring Boot 3 + Spring Security 6 JWT authentication, OAuth2 resource server configuration, role-based access control — directly applicable to Platform Service auth module |
+
+### Tier 4: Domain-Specific Patterns (Booking, Payments, Real-Time)
+
+| Repository | Focus Area | What to Extract |
+|-----------|-----------|----------------|
+| [macrozheng/mall](https://github.com/macrozheng/mall) ~78k ⭐ | E-Commerce Platform | Spring Boot + MyBatis full e-commerce system, order management, payment integration, Redis caching strategies, Elasticsearch, Docker deployment — reference for booking/payment flow patterns |
+| [macrozheng/mall-swarm](https://github.com/macrozheng/mall-swarm) ~12k ⭐ | Microservices E-Commerce | Spring Cloud Alibaba microservices edition, Spring Boot 3.x, gateway routing, service discovery, distributed transactions — reference for splitting monolith into Platform + Transaction services |
+| [dandoran/spring-data-postgis-geospatial](https://github.com/dandoran/spring-data-postgis-geospatial) | PostGIS + Spring Data | Hibernate Spatial with PostGIS, Flyway migrations for spatial schema, distance queries using ST_DWithin — directly applicable to court discovery geospatial queries |
+| [dnjscksdn98/spring-redis-chat-service](https://github.com/dnjscksdn98/spring-redis-chat-service) | WebSocket + Redis Pub/Sub | Spring Boot WebSocket with STOMP, Redis Pub/Sub for horizontal scaling, real-time messaging — directly applicable to availability broadcasting and in-app notifications |
+
+### How to Use These References
+
+When implementing a specific feature, consult the appropriate reference:
+
+| Feature Being Implemented | Primary Reference | Secondary Reference |
+|--------------------------|------------------|---------------------|
+| Package structure & layer separation | Buckpal | Spring Modulith |
+| Inter-service communication | FTGO Application | PetClinic Microservices |
+| Booking conflict prevention (saga) | FTGO Application | Eventuate Tram Sagas |
+| JWT authentication & OAuth | ali-bouali/spring-boot-3-jwt-security | PetClinic Microservices |
+| Kubernetes deployment & health probes | piomin/sample-spring-microservices-kubernetes | Google Online Boutique |
+| Istio service mesh & observability | Google Online Boutique | PetClinic Microservices |
+| PostGIS geospatial queries | dandoran/spring-data-postgis-geospatial | — |
+| WebSocket + Redis Pub/Sub scaling | dnjscksdn98/spring-redis-chat-service | — |
+| Payment processing (Stripe) | macrozheng/mall (payment module) | FTGO Application |
+| Redis caching strategies | macrozheng/mall | PetClinic Microservices |
+| Testing (unit, slice, integration) | rieckpil Masterclass | abhisheksr01 best-practices |
+| Property-based testing (jqwik) | [jqwik.net](https://jqwik.net/) | — |
+| CI/CD & DevSecOps pipeline | abhisheksr01 best-practices | Google Online Boutique |
+| Docker Compose local dev | PetClinic Microservices | FTGO Application |
+| Locust load/stress testing | Google Online Boutique | — |
+| E2E contract testing | FTGO Application | abhisheksr01 (Cucumber) |
+
+### Key Architectural Decisions Informed by References
+
+**From Buckpal (Hexagonal Architecture):**
+- One use case = one incoming port interface
+- Self-validating command objects (records with compact constructors)
+- Domain entities with creation constructor + `withId()` reconstitution factory
+- Take shortcuts consciously (skip ports for simple CRUD, document the trade-off)
+
+**From FTGO Application (Microservice Patterns):**
+- Saga pattern for distributed transactions spanning booking + payment
+- Transactional outbox for reliable event publishing to Kafka
+- API composition for aggregating data across services
+- Service decomposition by business capability (Platform vs Transaction)
+
+**From PetClinic Microservices (Spring Cloud):**
+- Spring Cloud Gateway for API routing (maps to NGINX Ingress path-based routing in K8s)
+- Resilience4j for circuit breaking on external service calls (Stripe, OAuth, Weather API)
+- Micrometer + OpenTelemetry for distributed tracing across services
+- Docker Compose for local development infrastructure
+
+**From Google Online Boutique (Cloud-Native):**
+- Kubernetes-native deployment with health probes and readiness checks
+- Istio service mesh for mTLS, traffic management, and canary deployments
+- Locust for load testing with realistic user flows
+- Terraform for infrastructure provisioning
+
+**From rieckpil Masterclass (Testing):**
+- Test pyramid: many unit tests, some slice tests, few integration tests
+- Never use H2 for integration tests — always Testcontainers with real PostgreSQL
+- @WebMvcTest with @MockBean for controller tests
+- @DataJpaTest + Testcontainers for repository tests
+- WireMock for external API mocking (Stripe, OAuth, Weather)
+- Awaitility for async event assertions (Kafka consumers, WebSocket)
+
+**From jqwik (Property-Based Testing):**
+- Use `@Property` annotation with custom `@Provide` generators
+- Minimum 100 iterations per property test
+- Smart generators that constrain to valid input space
+- Tag format: `Feature: field-booking-platform, Property {N}: {description}`
+
+## 12. DigitalOcean-Specific Deployment Patterns
+
+> Since the field booking platform deploys to DigitalOcean (DOKS, Managed PostgreSQL, Managed Redis, Spaces), adapt cloud-specific patterns from the reference repositories accordingly.
+
+### Mapping AWS/GCP Patterns to DigitalOcean
+
+| Pattern from Reference | AWS/GCP Implementation | DigitalOcean Equivalent |
+|----------------------|----------------------|------------------------|
+| Service Discovery | Eureka (PetClinic) | Kubernetes DNS + NGINX Ingress |
+| Config Management | Spring Cloud Config (PetClinic) | Kubernetes ConfigMaps + Sealed Secrets |
+| API Gateway | Spring Cloud Gateway | NGINX Ingress Controller with path-based routing |
+| Object Storage | S3 (AWS) | DigitalOcean Spaces (S3-compatible API) |
+| Container Registry | ECR / GCR | DigitalOcean Container Registry |
+| Managed Database | RDS / Cloud SQL | DigitalOcean Managed PostgreSQL + PostGIS |
+| Managed Cache | ElastiCache / Memorystore | DigitalOcean Managed Redis |
+| Event Streaming | Amazon MSK / Pub/Sub | Upstash Kafka (serverless, HTTPS-based) |
+| Infrastructure as Code | CloudFormation / Deployment Manager | Terraform with DigitalOcean provider |
+| CI/CD | CodePipeline / Cloud Build | GitHub Actions |
+| Secrets Management | AWS Secrets Manager / GCP Secret Manager | External Secrets Operator → Sealed Secrets (MVP) |
+| Service Mesh | App Mesh / Anthos | Istio on DOKS (staging + production only) |
+| Monitoring | CloudWatch / Cloud Monitoring | Prometheus + Grafana (self-hosted on DOKS) |
+| Log Aggregation | CloudWatch Logs / Cloud Logging | Loki + Grafana (self-hosted on DOKS) |
+| Distributed Tracing | X-Ray / Cloud Trace | Jaeger with OpenTelemetry (self-hosted on DOKS) |
+
+### Spring Profile Configuration for DigitalOcean Environments
+
+```yaml
+# application-local.yml — Docker Compose infrastructure
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/fieldbooking
+  redis:
+    host: localhost
+  kafka:
+    bootstrap-servers: localhost:9092
+
+# application-dev.yml — DigitalOcean dev namespace
+spring:
+  datasource:
+    url: jdbc:postgresql://${DO_PG_HOST}:${DO_PG_PORT}/fieldbooking_dev
+  redis:
+    host: ${DO_REDIS_HOST}
+  kafka:
+    bootstrap-servers: ${UPSTASH_KAFKA_BOOTSTRAP}
+    properties:
+      security.protocol: SASL_SSL
+      sasl.mechanism: SCRAM-SHA-256
+
+# application-prod.yml — DigitalOcean production cluster
+spring:
+  datasource:
+    url: jdbc:postgresql://${DO_PG_HOST}:${DO_PG_PORT}/fieldbooking_prod
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+  redis:
+    host: ${DO_REDIS_HOST}
+  kafka:
+    bootstrap-servers: ${UPSTASH_KAFKA_BOOTSTRAP}
+    properties:
+      security.protocol: SASL_SSL
+      sasl.mechanism: SCRAM-SHA-256
+```
+
+### Kubernetes Health Probes (from piomin reference)
+
+```yaml
+# Kubernetes deployment manifest for Spring Boot service
+livenessProbe:
+  httpGet:
+    path: /actuator/health/liveness
+    port: 8080
+  initialDelaySeconds: 60
+  periodSeconds: 10
+readinessProbe:
+  httpGet:
+    path: /actuator/health/readiness
+    port: 8080
+  initialDelaySeconds: 30
+  periodSeconds: 5
+startupProbe:
+  httpGet:
+    path: /actuator/health
+    port: 8080
+  initialDelaySeconds: 60
+  failureThreshold: 30
+  periodSeconds: 10
+```
+
 ## References
 
-- [Buckpal — thombergs](https://github.com/thombergs/buckpal) — Hexagonal Architecture reference
+- [Buckpal — thombergs](https://github.com/thombergs/buckpal) — Hexagonal Architecture reference (~2.5k ⭐, 722 forks)
 - [Hexagonal Architecture with Java and Spring — reflectoring.io](https://reflectoring.io/spring-hexagonal/) — Buckpal companion article
 - [Testing Spring Boot Applications Masterclass — rieckpil](https://github.com/rieckpil/testing-spring-boot-applications-masterclass) — Testing standards
 - [Spring Boot Test Slices — rieckpil](https://rieckpil.de/spring-boot-test-slices-overview-and-usage/) — Complete slice test guide
 - [Spring PetClinic Microservices](https://github.com/spring-petclinic/spring-petclinic-microservices) — Spring Cloud patterns
-- [Spring Boot Microservice Best Practices — abhisheksr01](https://github.com/abhisheksr01/spring-boot-microservice-best-practices) — DevSecOps
-- [Testcontainers](https://testcontainers.com/)
+- [Spring Boot Microservice Best Practices — abhisheksr01](https://github.com/abhisheksr01/spring-boot-microservice-best-practices) — DevSecOps, Java 21+
+- [FTGO Application — microservices-patterns](https://github.com/microservices-patterns/ftgo-application) — Saga, event-driven patterns (~3.7k ⭐, 1.4k forks)
+- [Eventuate Tram Sagas](https://github.com/eventuate-tram/eventuate-tram-sagas) — Distributed transaction sagas
+- [Google Online Boutique — microservices-demo](https://github.com/GoogleCloudPlatform/microservices-demo) — Cloud-native K8s reference (~17k ⭐)
+- [Spring Microservices on Kubernetes — piomin](https://github.com/piomin/sample-spring-microservices-kubernetes) — Spring Cloud Kubernetes (~414 ⭐)
+- [Spring Modulith](https://github.com/spring-projects/spring-modulith) — Modular architecture with Spring Boot (~507 ⭐)
+- [Spring Boot 3 JWT Security — ali-bouali](https://github.com/ali-bouali/spring-boot-3-jwt-security) — Spring Security 6 + JWT (~1.3k ⭐)
+- [Mall E-Commerce — macrozheng](https://github.com/macrozheng/mall) — Full e-commerce platform (~78k ⭐)
+- [Mall Swarm Microservices — macrozheng](https://github.com/macrozheng/mall-swarm) — Microservices e-commerce (~12k ⭐)
+- [Spring Data PostGIS Geospatial — dandoran](https://github.com/dandoran/spring-data-postgis-geospatial) — PostGIS + Hibernate Spatial + Flyway
+- [Spring Redis Chat Service — dnjscksdn98](https://github.com/dnjscksdn98/spring-redis-chat-service) — WebSocket + Redis Pub/Sub
+- [jqwik — Property-Based Testing for Java](https://jqwik.net/) — PBT framework for JUnit 5
+- [Testcontainers](https://testcontainers.com/) — Real database testing
+- [Microservices.io — Chris Richardson](https://microservices.io/) — Microservice patterns catalog
+- [OpenTelemetry](https://opentelemetry.io/) — Observability framework
 
 ---
 *Content rephrased for compliance with licensing restrictions. Original sources cited above.*
