@@ -127,6 +127,7 @@ graph TB
 - Platform admin operations (user management, dispute escalation, platform-wide promo codes)
 - Support ticket management (creation, assignment, responses, metrics)
 - Multi-language content management
+- Court owner subscription billing (Stripe Billing integration, trial management, tier upgrades/downgrades)
 
 **Transaction Service (Spring Boot)**
 - Customer booking creation and management
@@ -178,7 +179,7 @@ graph TB
 - **Load Balancer**: Automatic SSL/TLS with Let's Encrypt certificates
 - **VPC**: Private networking between services
 - **Firewall Rules**: Kubernetes network policies for service isolation
-- **Secrets Management**: Application secrets (JWT signing key pair (RS256 private/public), Stripe API keys, OAuth client secrets, database passwords, FCM server keys, SendGrid API keys, internal API key for service-to-service auth) stored as DigitalOcean environment variables or in a dedicated secrets store. Synced to Kubernetes via External Secrets Operator. For MVP, Kubernetes Sealed Secrets (encrypted in Git) are acceptable. Migration path to HashiCorp Vault when operational maturity justifies it.
+- **Secrets Management**: Application secrets (JWT signing key pair (RS256 private/public), Stripe API keys, Stripe webhook signing secrets (one per webhook endpoint — Transaction Service payments, Platform Service Connect/Billing), OAuth client secrets, database passwords, FCM server keys, SendGrid API keys, internal API key for service-to-service auth) stored as DigitalOcean environment variables or in a dedicated secrets store. Synced to Kubernetes via External Secrets Operator. For MVP, Kubernetes Sealed Secrets (encrypted in Git) are acceptable. Migration path to HashiCorp Vault when operational maturity justifies it.
 - **Secret Rotation**: Database passwords and API keys should support rotation without service restart via External Secrets Operator refresh intervals
 
 **Observability & Monitoring**
@@ -254,7 +255,7 @@ graph TB
 - **Clustering**: Quartz SHALL use JDBC-based job store with `org.quartz.jobStore.isClustered=true` to ensure only one pod executes each scheduled job when running multiple Transaction Service replicas
 
 **Database Ownership (Shared PostgreSQL, Separate Schemas)**
-- Platform Service schema: users, roles, refresh_tokens, courts, availability_windows, favorites, preferences, oauth_providers, skill_levels, court_ratings, promo_codes, pricing_rules, translations, feature_flags, support_tickets, support_messages, support_attachments
+- Platform Service schema: users, roles, refresh_tokens, courts, availability_windows, favorites, preferences, oauth_providers, skill_levels, court_ratings, promo_codes, pricing_rules, translations, feature_flags, support_tickets, support_messages, support_attachments, subscriptions, subscription_invoices
 - Transaction Service schema: bookings, payments, notifications, device_tokens, audit_logs, waitlists, open_matches, split_payments, scheduled_jobs
 - **Cross-schema access rule**: Transaction Service schema has read-only access to Platform Service schema through defined database views (e.g., `platform.v_court_summary`, `platform.v_user_basic`). This avoids HTTP round-trips for simple data lookups (receipt generation, booking display) while maintaining strict write ownership boundaries. Platform Service owns all write operations to its schema.
 - Read replica used by Platform Service for analytics queries to avoid impacting booking performance
@@ -783,6 +784,17 @@ graph TD
 - **Support_Ticket**: User-submitted issue report with category, description, attachments, and context metadata, tracked through a lifecycle (OPEN → IN_PROGRESS → RESOLVED → CLOSED)
 - **Diagnostic_Log**: Sanitized app logs (network requests, errors, navigation events) collected from the mobile device and attached to support tickets for debugging
 - **Support_Hub**: In-app and admin portal interface providing FAQ, ticket submission, and ticket tracking
+- **Platform_Commission**: Percentage-based fee (default 10%) deducted from each customer booking payment before transferring the court owner's share via Stripe Connect
+- **Stripe_Customer**: Stripe object created for each platform user on first payment, used to store saved payment methods and track payment history
+- **Stripe_SetupIntent**: Stripe API object used to securely save a customer's payment method for future use without an immediate charge
+- **PaymentIntent_Capture_Method**: Stripe configuration determining whether payment is captured immediately (`automatic`) or held for later capture (`manual`/authorize-then-capture)
+- **Authorization_Hold**: Temporary hold on a customer's payment method for the booking amount, used in manual confirmation mode. Expires after 7 days per Stripe's policy
+- **Destination_Charge**: Stripe Connect payment pattern where the platform creates a PaymentIntent with `transfer_data.destination` set to the court owner's connected account, automatically splitting funds at capture time
+- **Application_Fee_Amount**: The platform commission amount specified on a Stripe PaymentIntent, automatically retained by the platform when funds are transferred to the court owner's connected account
+- **Split_Payment_Status**: Per-player tracking state in a split-payment booking: INVITED → PAYMENT_PENDING → PAID / EXPIRED / REFUNDED / DISPUTED
+- **Stripe_Billing**: Stripe's subscription management product used for court owner subscription billing (separate from customer booking payments)
+- **Subscription_Grace_Period**: 7-day window after a failed subscription payment during which the court owner retains full access before being restricted to expired status
+- **Euro_Cents**: Integer representation of EUR amounts (e.g., €25.50 = 2550) used throughout the API, database, and Stripe calls to avoid floating-point rounding issues
 
 ## Requirements
 
@@ -1046,6 +1058,43 @@ Internal HTTP calls between Platform Service and Transaction Service (within the
 9. THE Platform_Service SHALL support configurable subscription tiers (e.g., Basic, Pro) with different feature access levels, managed through the admin portal
 10. WHEN a court owner's subscription lapses, THE Platform_Service SHALL restrict access to manual booking creation while preserving existing booking data and customer-facing court visibility
 
+### Requirement 9a: Court Owner Subscription Billing
+
+**User Story:** As a court owner, I want to subscribe to a platform plan after my trial expires so that I can continue managing my courts and bookings through the admin portal.
+
+#### Subscription Tiers
+
+| Tier | Monthly Price | Features |
+|------|--------------|----------|
+| Basic | €19.99/month | Manual bookings, booking calendar, basic analytics, standard support |
+| Pro | €39.99/month | Everything in Basic + dynamic pricing, promotional codes, advanced analytics, priority support |
+
+Prices are indicative and configurable via Platform_Service admin API. All prices are in EUR.
+
+#### Billing Model
+
+Court owner subscriptions are managed through Stripe Billing (Stripe Subscriptions API), separate from the customer booking payment flow:
+
+- **Stripe Products and Prices**: Each subscription tier is a Stripe Product with a recurring Price object
+- **Billing cycle**: Monthly, starting from the date the court owner subscribes
+- **Payment method**: Court owner's personal payment method (card), separate from their Stripe Connect account used for receiving payouts
+- **Invoices**: Stripe generates invoices automatically; accessible via the admin dashboard
+
+#### Acceptance Criteria
+
+1. WHEN a court owner's 30-day trial expires, THE Platform_Service SHALL prompt them to select a subscription tier (Basic or Pro) and enter a payment method
+2. WHEN a court owner subscribes, THE Platform_Service SHALL create a Stripe Subscription using the Stripe Billing API with the selected tier's Price ID and the court owner's payment method
+3. THE Platform_Service SHALL store the Stripe Subscription ID and current tier in the court owner's profile and update the `subscriptionStatus` JWT claim to `ACTIVE` on the next token refresh
+4. WHEN a subscription payment succeeds, THE Platform_Service SHALL process the `invoice.paid` webhook and maintain the court owner's active status
+5. WHEN a subscription payment fails, THE Platform_Service SHALL process the `invoice.payment_failed` webhook, notify the court owner via email and push notification, and allow a 7-day grace period before restricting access
+6. WHEN the 7-day grace period expires without successful payment, THE Platform_Service SHALL update `subscriptionStatus` to `EXPIRED`, restrict admin features (no new manual bookings, no pricing changes), and keep customer-facing courts visible with existing bookings honored
+7. WHEN a court owner with an expired subscription makes a successful payment, THE Platform_Service SHALL immediately restore full access and update `subscriptionStatus` to `ACTIVE`
+8. WHEN a court owner upgrades from Basic to Pro, THE Platform_Service SHALL prorate the charge for the remaining billing cycle via Stripe's proration
+9. WHEN a court owner downgrades from Pro to Basic, THE Platform_Service SHALL apply the change at the end of the current billing cycle (no immediate proration)
+10. WHEN a court owner cancels their subscription, THE Platform_Service SHALL allow access until the end of the current paid period, then transition to `EXPIRED` status
+11. THE Platform_Service SHALL provide court owners with a billing management page showing: current tier, next billing date, payment method on file, invoice history, and upgrade/downgrade/cancel options
+12. THE Platform_Service SHALL handle Stripe Billing webhooks: `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid`, `invoice.payment_failed`, `invoice.upcoming` (send reminder 3 days before billing)
+
 ### Requirement 10: Pending Booking Confirmation Workflow
 
 **User Story:** As a customer, I want my booking to be held pending court owner confirmation when immediate availability cannot be guaranteed, so that I have a chance to secure the court even if there are uncertainties.
@@ -1053,35 +1102,74 @@ Internal HTTP calls between Platform Service and Transaction Service (within the
 #### Acceptance Criteria
 
 1. THE Platform_Service SHALL allow court owners to configure a booking confirmation mode per court: "instant confirmation" (default) or "manual confirmation required"
-2. WHEN a court is configured with "manual confirmation required" mode, THE Transaction_Service SHALL create all bookings for that court with PENDING_CONFIRMATION status and hold the full payment amount
-3. WHEN a court is configured with "instant confirmation" mode, THE Transaction_Service SHALL confirm bookings immediately upon successful payment
+2. WHEN a court is configured with "manual confirmation required" mode, THE Transaction_Service SHALL create a Stripe PaymentIntent with `capture_method: manual` (authorize only), place the booking in PENDING_CONFIRMATION status, and hold the authorized amount until the court owner confirms or the timeout expires
+3. WHEN a court is configured with "instant confirmation" mode, THE Transaction_Service SHALL create a Stripe PaymentIntent with `capture_method: automatic` (immediate capture) and confirm the booking immediately upon successful payment
 4. WHEN a booking enters PENDING_CONFIRMATION status, THE Transaction_Service SHALL send confirmation request notifications to the court owner via push notification, email, and web platform
 5. WHEN a pending booking is not confirmed, THE Transaction_Service SHALL send reminder notifications to the court owner at configured intervals (default: 1 hour, 4 hours, 12 hours after booking creation)
-6. WHEN the confirmation timeout period expires without court owner response, THE Transaction_Service SHALL automatically cancel the booking and initiate a full refund
-7. WHEN a court owner confirms a pending booking, THE Transaction_Service SHALL change the booking status to CONFIRMED and capture the payment
-8. WHEN a court owner rejects a pending booking, THE Transaction_Service SHALL cancel the booking and initiate a full refund immediately
-9. THE Platform_Service SHALL allow configuration of confirmation timeout periods per court or court owner (default: 24 hours)
+6. WHEN the confirmation timeout period expires without court owner response, THE Transaction_Service SHALL automatically cancel the booking, cancel the Stripe PaymentIntent (releasing the authorization hold), and notify the customer
+7. WHEN a court owner confirms a pending booking, THE Transaction_Service SHALL capture the previously authorized PaymentIntent, change the booking status to CONFIRMED, and initiate the Stripe Connect transfer to the court owner's connected account
+8. WHEN a court owner rejects a pending booking, THE Transaction_Service SHALL cancel the Stripe PaymentIntent (releasing the authorization hold) and notify the customer immediately
+9. THE Platform_Service SHALL allow configuration of confirmation timeout periods per court or court owner (default: 24 hours, maximum: 144 hours / 6 days). The maximum is constrained by Stripe's 7-day authorization hold window — the timeout MUST be at least 24 hours shorter than the hold expiration to allow for processing time
 10. WHEN a court owner changes confirmation mode from "instant" to "manual", THE Platform_Service SHALL apply the change only to future bookings
+11. WHEN a Stripe authorization hold is approaching expiration (24 hours before), THE Transaction_Service SHALL auto-cancel the pending booking and release the hold rather than risk a failed capture
 
 ### Requirement 11: Integrated Payment Processing
 
 **User Story:** As a customer, I want to pay for bookings securely with proper receipt generation and dispute handling, so that my reservations are confirmed and I have a clear payment record.
 
+#### Payment Flow Patterns
+
+The platform uses two distinct Stripe payment flows depending on the court's confirmation mode:
+
+| Confirmation Mode | Stripe Pattern | PaymentIntent `capture_method` | When Capture Happens |
+|-------------------|---------------|-------------------------------|---------------------|
+| Instant | Immediate capture | `automatic` | At payment time |
+| Manual (pending) | Authorize then capture | `manual` | When court owner confirms |
+
+#### Platform Fee Model
+
+The platform charges a percentage-based commission on each customer booking:
+
+| Fee Component | Value | Configurable? |
+|---------------|-------|---------------|
+| Platform commission | 10% of booking amount (default) | Yes — configurable per subscription tier via Platform_Service admin API |
+| Stripe processing fee | ~1.5% + €0.25 per transaction (Stripe's standard EU rate) | No — set by Stripe |
+| Platform commission on refund | Non-refundable | N/A |
+| Stripe processing fee on refund | Non-refundable | N/A |
+
+The platform commission is deducted before transferring the court owner's share via Stripe Connect. Example: €50 booking → €5 platform commission → €45 transferred to court owner (minus Stripe's processing fee which is deducted by Stripe automatically).
+
+#### Payment Method Management
+
+The platform uses Stripe Elements (client-side tokenization) to maintain PCI SAQ-A compliance. Card numbers never touch the backend.
+
+- **Stripe Customer objects**: Created for each registered user on first payment. Stored as `stripeCustomerId` in the users table.
+- **Saved payment methods**: Managed via Stripe SetupIntents. Customers can save cards during checkout or from their profile. Saved methods are stored on the Stripe Customer object, not in the platform database.
+- **Apple Pay / Google Pay**: Handled through Stripe's Payment Request Button — no additional PCI scope.
+
+#### Currency and Amount Handling
+
+All monetary amounts are stored and transmitted as integers in the smallest currency unit (euro cents). Example: €25.50 is stored as `2550`. This avoids floating-point rounding issues and aligns with Stripe's API format. Display formatting (e.g., "€25,50" for Greek locale) is handled by client applications.
+
 #### Acceptance Criteria
 
-1. WHEN payment is initiated, THE Transaction_Service SHALL create a Stripe payment intent with booking amount
-2. WHEN payment authorization succeeds, THE Transaction_Service SHALL confirm the booking before capturing payment
-3. WHEN payment fails, THE Transaction_Service SHALL release the time slot and notify the customer
-4. WHEN payment is captured, THE Transaction_Service SHALL calculate revenue split between platform and court owner
-5. THE Transaction_Service SHALL maintain PCI compliance throughout the payment process
-6. THE Transaction_Service SHALL implement Stripe webhook handlers for asynchronous payment events (payment_intent.succeeded, payment_intent.payment_failed, charge.dispute.created)
-7. WHEN a Stripe webhook is missed or fails, THE Transaction_Service SHALL implement idempotent retry logic and reconciliation checks
-8. WHEN a payment dispute or chargeback is received, THE Transaction_Service SHALL freeze the booking, notify the court owner, and provide dispute evidence submission
-9. THE Transaction_Service SHALL operate in a single configured currency (EUR) with the ability to add multi-currency support in the future
-10. WHEN a booking is confirmed, THE Transaction_Service SHALL generate a digital receipt with booking details, payment amount, and transaction ID
-11. WHEN a receipt is generated, THE Transaction_Service SHALL send it via email and make it available in the booking history
-12. WHEN a customer's saved payment method expires between booking creation and pending confirmation capture, THE Transaction_Service SHALL notify the customer to update payment and extend the confirmation window
-13. THE Transaction_Service SHALL support Apple Pay and Google Pay as payment methods through Stripe
+1. WHEN payment is initiated for an instant-confirmation court, THE Transaction_Service SHALL create a Stripe PaymentIntent with `capture_method: automatic`, the booking amount in euro cents, the platform commission as `application_fee_amount`, and the court owner's Stripe Connect account as the `transfer_data.destination`
+2. WHEN payment is initiated for a manual-confirmation court, THE Transaction_Service SHALL create a Stripe PaymentIntent with `capture_method: manual` (authorize only), holding the full amount until the court owner confirms
+3. WHEN payment authorization succeeds, THE Transaction_Service SHALL confirm the booking (instant mode) or place it in PENDING_CONFIRMATION status (manual mode)
+4. WHEN payment fails, THE Transaction_Service SHALL release the time slot and notify the customer with the Stripe decline reason
+5. WHEN payment is captured (either immediately or after court owner confirmation), THE Transaction_Service SHALL record the platform commission amount and the court owner's net amount in the payments table
+6. THE Transaction_Service SHALL maintain PCI SAQ-A compliance by using Stripe Elements for all client-side card tokenization — raw card numbers SHALL never be sent to or stored on platform servers
+7. THE Transaction_Service SHALL implement Stripe webhook handlers for asynchronous payment events: `payment_intent.succeeded`, `payment_intent.payment_failed`, `payment_intent.canceled`, `charge.dispute.created`, `charge.dispute.closed`, `charge.refunded`
+8. WHEN a Stripe webhook is received, THE Transaction_Service SHALL verify the webhook signature using the Stripe webhook signing secret and reject unsigned or tampered events
+9. WHEN a Stripe webhook is missed or fails, THE Transaction_Service SHALL implement idempotent retry logic and a reconciliation job (Quartz, every 15 minutes) that checks for PaymentIntents in inconsistent states
+10. WHEN a payment dispute or chargeback is received via `charge.dispute.created` webhook, THE Transaction_Service SHALL freeze the booking, notify the court owner with dispute details, and provide an API for the court owner to submit dispute evidence (booking confirmation, court usage logs)
+11. THE Transaction_Service SHALL operate in EUR (euro cents) as the single configured currency. All amounts in the API, database, and Stripe calls use integer cents. Multi-currency support can be added in the future by introducing a currency field per court and using Stripe's multi-currency PaymentIntents
+12. WHEN a booking is confirmed, THE Transaction_Service SHALL generate a digital receipt containing: booking ID, court name and address, date/time, duration, gross amount, platform fee, net amount, payment method last 4 digits, Stripe transaction ID, and VAT information if applicable
+13. WHEN a receipt is generated, THE Transaction_Service SHALL send it via email (SendGrid) and make it available in the booking history API
+14. WHEN a customer's saved payment method expires or is removed between booking creation and pending confirmation capture, THE Transaction_Service SHALL notify the customer to update their payment method within 24 hours. If not updated, the pending booking is auto-cancelled and the authorization hold is released
+15. THE Transaction_Service SHALL support Apple Pay and Google Pay as payment methods through Stripe's Payment Request Button API
+16. WHEN a Stripe Customer object does not exist for a user, THE Transaction_Service SHALL create one on the user's first payment and store the `stripeCustomerId` in the platform schema users table
+17. WHEN a customer saves a payment method during checkout, THE Transaction_Service SHALL create a Stripe SetupIntent to securely store the card on the Stripe Customer object for future use
 
 ### Requirement 11a: Court Owner Payment Onboarding (Stripe Connect)
 
@@ -1093,28 +1181,46 @@ Internal HTTP calls between Platform Service and Transaction Service (within the
 2. WHEN Stripe Connect onboarding is initiated, THE Platform_Service SHALL redirect the court owner to Stripe's hosted onboarding flow for identity verification and bank account linking
 3. WHEN a court owner has not completed Stripe Connect onboarding, THE Platform_Service SHALL prevent their courts from accepting customer bookings (manual bookings remain available)
 4. WHEN Stripe Connect onboarding is incomplete, THE Platform_Service SHALL display a prominent banner in the admin interface prompting the court owner to complete setup
-5. WHEN Stripe sends account update webhooks, THE Platform_Service SHALL update the court owner's payment status accordingly (pending, active, restricted, disabled)
-6. WHEN a court owner's Stripe account becomes restricted (e.g., due to compliance issues), THE Platform_Service SHALL pause customer bookings for their courts and notify the court owner
-7. THE Platform_Service SHALL provide a dashboard section where court owners can view their payout schedule, payout history, and Stripe account status
-8. THE Transaction_Service SHALL use Stripe Connect transfers to automatically route the court owner's share of each payment to their connected account
-9. THE Platform_Service SHALL support configurable payout schedules (daily, weekly, monthly) through Stripe Connect settings
+5. WHEN Stripe sends account update webhooks (`account.updated`), THE Platform_Service SHALL update the court owner's payment status accordingly (pending, active, restricted, disabled) and refresh the `stripeConnected` claim on the next token refresh
+6. WHEN a court owner's Stripe account becomes restricted (e.g., due to compliance issues), THE Platform_Service SHALL pause customer bookings for their courts and notify the court owner with Stripe's specific requirements for resolution
+7. THE Platform_Service SHALL provide a dashboard section where court owners can view their payout schedule, payout history, balance, and Stripe account status — data fetched via Stripe Connect API on demand
+8. THE Transaction_Service SHALL use Stripe Connect destination charges (`transfer_data.destination`) to automatically route the court owner's share of each payment at capture time. The platform commission is deducted as `application_fee_amount` on the PaymentIntent
+9. THE Platform_Service SHALL support configurable payout schedules (daily, weekly, monthly) through Stripe Connect settings, with the default being the Stripe standard schedule for the court owner's country
 
 ### Requirement 12: Booking Modification and Cancellation
 
 **User Story:** As a customer or court owner, I want to modify or cancel bookings with appropriate refund handling, so that I can manage changes to my reservations.
 
+#### Refund Calculation Model
+
+When a cancellation occurs, the refund is calculated as follows:
+
+1. Determine the applicable refund percentage from the court owner's cancellation policy tiers
+2. The platform commission (default 10%) is always non-refundable
+3. Stripe's processing fee is always non-refundable (absorbed by the platform or court owner, not the customer)
+4. The refundable amount = (booking amount − platform commission) × refund percentage
+
+Example: €50 booking, 50% refund tier:
+- Platform commission: €5 (non-refundable)
+- Court owner's share: €45
+- Refund to customer: €45 × 50% = €22.50
+- Court owner receives: €45 − €22.50 = €22.50
+- Platform keeps: €5 commission
+
+For split-payment bookings, the same calculation applies to the total booking amount. Each co-player who has already paid receives their proportional share of the refund directly to their original payment method. The booking creator's refund covers any unpaid shares.
+
 #### Acceptance Criteria
 
 1. WHEN a customer requests booking modification, THE Transaction_Service SHALL validate new time slot availability before processing the change
-2. WHEN a booking modification is approved, THE Transaction_Service SHALL update the booking atomically and adjust payment if pricing differs
-3. WHEN a customer cancels a booking, THE Transaction_Service SHALL apply the court owner's cancellation policy to determine refund amount
-4. WHEN a court owner cancels a confirmed booking, THE Transaction_Service SHALL issue a full refund to the customer regardless of cancellation policy
-5. WHEN a cancellation is processed, THE Transaction_Service SHALL initiate the refund through Stripe and update booking status to CANCELLED
-6. WHEN a refund is initiated, THE Transaction_Service SHALL track refund status and notify the customer when the refund is completed
-7. THE Platform_Service SHALL allow court owners to configure cancellation policies as a set of time-based refund tiers, each specifying: a time threshold (hours before booking start) and a refund percentage (0-100%). Example: [{threshold: 24h, refund: 100%}, {threshold: 12h, refund: 50%}, {threshold: 0h, refund: 0%}]
-8. THE Platform_Service SHALL enforce a platform minimum: the platform fee is always non-refundable regardless of the court owner's cancellation policy
-9. WHEN a booking is cancelled within the no-refund window, THE Transaction_Service SHALL still process the cancellation but issue no refund
-10. WHEN partial refunds are calculated, THE Transaction_Service SHALL deduct platform fees first and refund the remaining amount proportionally to the court owner's policy tier
+2. WHEN a booking modification is approved, THE Transaction_Service SHALL update the booking atomically and adjust payment if pricing differs — creating a new PaymentIntent for additional charges or issuing a partial refund for price decreases
+3. WHEN a customer cancels a booking, THE Transaction_Service SHALL apply the court owner's cancellation policy to determine refund amount using the refund calculation model above
+4. WHEN a court owner cancels a confirmed booking, THE Transaction_Service SHALL issue a full refund of the court owner's share to the customer (platform commission remains non-refundable) and reverse the Stripe Connect transfer
+5. WHEN a cancellation is processed, THE Transaction_Service SHALL initiate the refund through Stripe's Refund API, update booking status to CANCELLED, and record the refund amount, reason, and timestamp in the payments table
+6. WHEN a refund is initiated, THE Transaction_Service SHALL track refund status via `charge.refunded` webhook and notify the customer when the refund is completed (typically 5-10 business days)
+7. THE Platform_Service SHALL allow court owners to configure cancellation policies as a set of time-based refund tiers, each specifying: a time threshold (hours before booking start) and a refund percentage (0-100%). Example: [{threshold: 24h, refund: 100%}, {threshold: 12h, refund: 50%}, {threshold: 0h, refund: 0%}]. Tiers must be ordered by descending threshold with no gaps
+8. THE Platform_Service SHALL enforce a platform minimum: the platform commission is always non-refundable regardless of the court owner's cancellation policy or who initiates the cancellation
+9. WHEN a booking is cancelled within the no-refund window (0% tier), THE Transaction_Service SHALL still process the cancellation but issue no refund — the court owner retains their full share
+10. WHEN partial refunds are calculated, THE Transaction_Service SHALL deduct the platform commission first, then apply the refund percentage to the court owner's share only
 11. WHEN a court owner has not configured a cancellation policy, THE Platform_Service SHALL apply a default policy: 100% refund if cancelled 24+ hours before, 50% if 12-24 hours, 0% if less than 12 hours
 
 ### Requirement 13: Asynchronous Notification System
@@ -1454,21 +1560,33 @@ Internal HTTP calls between Platform Service and Transaction Service (within the
 
 **User Story:** As a customer booking a court with friends, I want to split the payment among all players, so that each person pays their fair share without manual coordination.
 
+#### Split Payment Flow
+
+Split payments use a "creator pays upfront, co-players reimburse" model because Stripe does not support partial release of authorization holds:
+
+1. Booking creator pays the full booking amount (immediate capture via standard flow)
+2. Co-players receive payment request links with their share amount
+3. As each co-player pays, a Stripe Transfer sends their share amount from the platform to the booking creator's Stripe Customer balance (or a direct refund to the creator's original payment method)
+4. If co-players don't pay by the deadline, the booking creator absorbs the cost
+
+This avoids complex authorization hold management and keeps the booking confirmed from the start.
+
 #### Acceptance Criteria
 
-1. WHEN a customer creates a booking, THE Transaction_Service SHALL offer the option to split payment among multiple players
-2. WHEN split payment is selected, THE Transaction_Service SHALL allow the booking creator to invite other players by username or email
-3. WHEN split payment invitations are sent, THE Transaction_Service SHALL notify invited players with their share amount and a payment link
-4. WHEN a split payment is initiated, THE Transaction_Service SHALL hold the full amount from the booking creator's payment method as a guarantee
-5. WHEN invited players pay their share, THE Transaction_Service SHALL release the corresponding amount from the booking creator's hold
+1. WHEN a customer creates a booking with split payment enabled, THE Transaction_Service SHALL charge the full booking amount to the booking creator's payment method (standard immediate capture flow) and record the booking as a split-payment booking
+2. WHEN split payment is selected, THE Transaction_Service SHALL allow the booking creator to invite other players by username or email, specifying the number of shares
+3. WHEN split payment invitations are sent, THE Transaction_Service SHALL notify invited players with their share amount and a deep link to the payment screen
+4. WHEN an invited co-player opens the payment link, THE Transaction_Service SHALL create a separate Stripe PaymentIntent for their share amount
+5. WHEN a co-player successfully pays their share, THE Transaction_Service SHALL issue a partial refund of the corresponding amount to the booking creator's original payment method and mark that share as PAID
 6. THE Transaction_Service SHALL enforce a configurable deadline for co-players to pay their share (default: 2 hours after match ends)
-7. WHEN the payment deadline expires and co-players have not paid, THE Transaction_Service SHALL attempt to charge the full remaining amount to the booking creator
-8. WHEN the booking creator's payment method fails during deadline enforcement, THE Transaction_Service SHALL retry the charge with exponential backoff and notify the booking creator to update their payment method within 24 hours before escalating to platform support
-9. WHEN all players have paid their share, THE Transaction_Service SHALL release the booking creator's hold completely
-10. THE Transaction_Service SHALL calculate each player's share equally by default, with the option for custom split amounts where each player's share must be at least €1.00
-11. WHEN a player cancels their participation in a split-payment booking, THE Transaction_Service SHALL redistribute the cost among remaining players and notify them of the updated share amount
-12. WHEN a split-payment booking is cancelled, THE Transaction_Service SHALL refund each co-player who has already paid their share directly to their original payment method, and release the booking creator's hold for any unpaid shares
-13. WHEN a co-player disputes their share payment, THE Transaction_Service SHALL handle the dispute independently without affecting other players' payments or the booking status
+7. WHEN the payment deadline expires and co-players have not paid, THE Transaction_Service SHALL mark unpaid shares as EXPIRED and notify the booking creator that they have absorbed the cost. No further collection is attempted — the booking creator accepted this risk at booking time
+8. WHEN all players have paid their share, THE Transaction_Service SHALL mark the split payment as FULLY_SETTLED and issue the final partial refund to the booking creator
+9. THE Transaction_Service SHALL calculate each player's share equally by default, with the option for custom split amounts where each player's share must be at least €1.00 and all shares must sum to the total booking amount
+10. WHEN a player cancels their participation in a split-payment booking before paying their share, THE Transaction_Service SHALL remove them from the split, redistribute the cost among remaining players, and notify remaining players of the updated share amount
+11. WHEN a player cancels their participation after paying their share, THE Transaction_Service SHALL refund their share directly to their original payment method and redistribute the cost among remaining players (the booking creator's refund is reduced accordingly)
+12. WHEN a split-payment booking is cancelled entirely, THE Transaction_Service SHALL: (a) refund each co-player who has already paid their share directly to their original payment method, (b) refund the booking creator the net amount (full booking amount minus any co-player shares that were already refunded to the creator), applying the cancellation policy to the total booking amount
+13. WHEN a co-player disputes their share payment via Stripe, THE Transaction_Service SHALL handle the dispute independently without affecting other players' payments or the booking status. The disputed amount is between the co-player and the platform — the booking creator is not involved
+14. THE Transaction_Service SHALL track split payment status per player: INVITED, PAYMENT_PENDING, PAID, EXPIRED, REFUNDED, DISPUTED
 
 ### Requirement 26: Waitlist for Fully Booked Courts
 
