@@ -1,0 +1,3155 @@
+openapi: 3.1.0
+info:
+  title: Field Booking Platform Service API
+  description: |
+    REST API contract for the Platform Service. Handles authentication, user management,
+    court management, discovery, weather, analytics, promo codes, feature flags, and admin operations.
+    
+    Base path: All endpoints are prefixed and routed via NGINX Ingress.
+    Authentication: Bearer JWT access token (RS256) unless marked as public.
+    Currency: EUR
+    Languages: el (Greek), en (English)
+  version: 1.0.0
+  contact:
+    name: Field Booking Platform Team
+
+servers:
+  - url: https://api.fieldbooking.gr
+    description: Production
+  - url: https://staging-api.fieldbooking.gr
+    description: Staging
+  - url: http://localhost:8080
+    description: Local development
+
+tags:
+  - name: Auth
+    description: Authentication, token management, OAuth flows
+  - name: Users
+    description: User profile and account management
+  - name: Courts
+    description: Court registration, management, and discovery
+  - name: Availability
+    description: Court availability windows and overrides
+  - name: Weather
+    description: Weather forecast integration
+  - name: Favorites
+    description: Customer favorite courts and preferences
+  - name: Ratings
+    description: Court ratings and reviews
+  - name: Analytics
+    description: Revenue and usage analytics (court owner + admin)
+  - name: Promo Codes
+    description: Promotional code management
+  - name: Pricing
+    description: Dynamic pricing configuration
+  - name: Feature Flags
+    description: Platform feature flag management (PLATFORM_ADMIN)
+  - name: Admin
+    description: Platform admin operations (PLATFORM_ADMIN)
+  - name: Stripe Connect
+    description: Court owner payment onboarding
+  - name: Support
+    description: Support ticket submission and management
+
+security:
+  - BearerAuth: []
+
+paths:
+
+  # ─── Auth ───────────────────────────────────────────────────────────────────
+  /api/auth/register:
+    post:
+      tags: [Auth]
+      summary: Register a new user via OAuth
+      description: Creates a new user account with OAuth provider info and selected role. Requires terms acceptance.
+      security: []
+      operationId: registerUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: User registered successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          description: User already exists with this OAuth provider
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/responses/Conflict'
+
+  /api/auth/login:
+    post:
+      tags: [Auth]
+      summary: Login via OAuth provider
+      description: Authenticates user with OAuth token and returns JWT access + refresh token pair.
+      security: []
+      operationId: loginUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Refresh access token
+      description: |
+        Exchanges a valid refresh token for a new access + refresh token pair.
+        The old refresh token is invalidated (rotation). Replay detection: if an
+        already-invalidated token is used, ALL tokens for the user are revoked.
+      security: []
+      operationId: refreshToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken:
+                  type: string
+                  description: Current refresh token
+      responses:
+        '200':
+          description: Tokens refreshed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '401':
+          description: Refresh token invalid, expired, or replay detected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/auth/logout:
+    post:
+      tags: [Auth]
+      summary: Logout and revoke tokens
+      description: Revokes all refresh tokens for the user's current device.
+      operationId: logoutUser
+      responses:
+        '204':
+          description: Logged out successfully
+
+  /api/auth/providers:
+    get:
+      tags: [Auth]
+      summary: List linked OAuth providers
+      description: Returns all OAuth providers linked to the authenticated user's account.
+      operationId: getLinkedProviders
+      responses:
+        '200':
+          description: List of linked providers
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  providers:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/OAuthProvider'
+
+  /api/auth/providers/link:
+    post:
+      tags: [Auth]
+      summary: Link additional OAuth provider
+      description: Links a new OAuth provider to the authenticated user's account for alternative login.
+      operationId: linkProvider
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LinkProviderRequest'
+      responses:
+        '200':
+          description: Provider linked successfully
+        '409':
+          description: Provider already linked to another account
+
+  # ─── Users ──────────────────────────────────────────────────────────────────
+  /api/users/me:
+    get:
+      tags: [Users]
+      summary: Get current user profile
+      description: Returns the authenticated user's full profile including role, preferences, and subscription status.
+      operationId: getCurrentUser
+      responses:
+        '200':
+          description: User profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfile'
+    put:
+      tags: [Users]
+      summary: Update user profile
+      description: Updates name, email, phone, language preference, notification preferences.
+      operationId: updateCurrentUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateUserRequest'
+      responses:
+        '200':
+          description: Profile updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfile'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/users/me/delete:
+    post:
+      tags: [Users]
+      summary: Request account deletion
+      description: |
+        Initiates GDPR-compliant account deletion. Cancels future bookings, processes refunds,
+        anonymizes personal data. Court owners must resolve all future bookings first.
+      operationId: requestAccountDeletion
+      responses:
+        '202':
+          description: Deletion request accepted and processing
+        '409':
+          description: Court owner has unresolved future bookings
+
+  /api/users/me/preferences:
+    get:
+      tags: [Users]
+      summary: Get user preferences
+      description: Returns personalization settings (preferred days/times, search distance, notification config).
+      operationId: getUserPreferences
+      responses:
+        '200':
+          description: User preferences
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserPreferences'
+    put:
+      tags: [Users]
+      summary: Update user preferences
+      operationId: updateUserPreferences
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserPreferences'
+      responses:
+        '200':
+          description: Preferences updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserPreferences'
+
+  /api/users/me/skill-levels:
+    get:
+      tags: [Users]
+      summary: Get player skill levels
+      description: Returns skill levels per sport type (1-7 scale).
+      operationId: getSkillLevels
+      responses:
+        '200':
+          description: Skill levels
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  skillLevels:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SkillLevel'
+    put:
+      tags: [Users]
+      summary: Update player skill levels
+      operationId: updateSkillLevels
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                skillLevels:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/SkillLevel'
+      responses:
+        '200':
+          description: Skill levels updated
+
+
+  # ─── Courts ─────────────────────────────────────────────────────────────────
+  /api/fields:
+    get:
+      tags: [Courts]
+      summary: Search courts
+      description: |
+        Geospatial search for courts. Supports filtering by type, location type, distance,
+        map bounds, and availability for a given date/time. Returns clustered results for map rendering.
+      operationId: searchCourts
+      parameters:
+        - name: latitude
+          in: query
+          required: true
+          schema:
+            type: number
+            format: double
+          description: User's latitude
+        - name: longitude
+          in: query
+          required: true
+          schema:
+            type: number
+            format: double
+          description: User's longitude
+        - name: radiusKm
+          in: query
+          schema:
+            type: number
+            format: double
+            default: 10
+          description: Search radius in kilometers
+        - name: courtType
+          in: query
+          schema:
+            $ref: '#/components/schemas/CourtType'
+          description: Filter by court type
+        - name: locationType
+          in: query
+          schema:
+            $ref: '#/components/schemas/LocationType'
+          description: Filter by indoor/outdoor
+        - name: date
+          in: query
+          schema:
+            type: string
+            format: date
+          description: Filter by availability on this date
+        - name: startTime
+          in: query
+          schema:
+            type: string
+            format: time
+          description: Filter by availability starting at this time
+        - name: minLat
+          in: query
+          schema:
+            type: number
+            format: double
+          description: Map bounds - minimum latitude
+        - name: maxLat
+          in: query
+          schema:
+            type: number
+            format: double
+          description: Map bounds - maximum latitude
+        - name: minLng
+          in: query
+          schema:
+            type: number
+            format: double
+          description: Map bounds - minimum longitude
+        - name: maxLng
+          in: query
+          schema:
+            type: number
+            format: double
+          description: Map bounds - maximum longitude
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: size
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: Court search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CourtSearchResponse'
+    post:
+      tags: [Courts]
+      summary: Register a new court
+      description: Creates a new court. Requires COURT_OWNER role. Court visibility depends on owner verification status.
+      operationId: createCourt
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCourtRequest'
+      responses:
+        '201':
+          description: Court created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Court'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/fields/{fieldId}:
+    get:
+      tags: [Courts]
+      summary: Get court details
+      description: Returns full court details including ratings, amenities, availability, cancellation policy, and weather (for outdoor courts).
+      operationId: getCourtDetails
+      parameters:
+        - $ref: '#/components/parameters/FieldId'
+        - name: date
+          in: query
+          schema:
+            type: string
+            format: date
+          description: Date for availability and weather lookup
+      responses:
+        '200':
+          description: Court details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CourtDetail'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Courts]
+      summary: Update court details
+      description: Updates court information. Requires COURT_OWNER role and ownership of the court.
+      operationId: updateCourt
+      parameters:
+        - $ref: '#/components/parameters/FieldId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateCourtRequest'
+      responses:
+        '200':
+          description: Court updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Court'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Changes conflict with existing bookings
+    delete:
+      tags: [Courts]
+      summary: Remove a court
+      description: Deletes a court. Only allowed if no future confirmed bookings exist. Requires COURT_OWNER role.
+      operationId: deleteCourt
+      parameters:
+        - $ref: '#/components/parameters/FieldId'
+      responses:
+        '204':
+          description: Court deleted
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Court has future confirmed bookings
+
+  /api/fields/{fieldId}/images:
+    post:
+      tags: [Courts]
+      summary: Upload court images
+      description: Uploads images to Spaces. Validates file format and size.
+      operationId: uploadCourtImages
+      parameters:
+        - $ref: '#/components/parameters/FieldId'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                images:
+                  type: array
+                  items:
+                    type: string
+                    format: binary
+                  maxItems: 10
+      responses:
+        '200':
+          description: Images uploaded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  imageUrls:
+                    type: array
+                    items:
+                      type: string
+                      format: uri
+        '400':
+          description: Invalid file format or size
+
+  /api/fields/{fieldId}/confirmation-mode:
+    put:
+      tags: [Courts]
+      summary: Set booking confirmation mode
+      description: Sets court to "instant" or "manual" confirmation. Applies only to future bookings.
+      operationId: setConfirmationMode
+      parameters:
+        - $ref: '#/components/parameters/FieldId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mode]
+              properties:
+                mode:
+                  type: string
+                  enum: [INSTANT, MANUAL]
+                confirmationTimeoutHours:
+                  type: integer
+                  default: 24
+                  description: Hours before auto-cancel (only for MANUAL mode)
+      responses:
+        '200':
+          description: Confirmation mode updated
+
+  /api/fields/{fieldId}/waitlist-config:
+    put:
+      tags: [Courts]
+      summary: Enable/disable waitlist for a court
+      operationId: setWaitlistConfig
+      parameters:
+        - $ref: '#/components/parameters/FieldId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled:
+                  type: boolean
+      responses:
+        '200':
+          description: Waitlist config updated
+
+  /api/fields/{fieldId}/transfer:
+    post:
+      tags: [Courts]
+      summary: Transfer court ownership
+      description: Transfers court to another verified court owner.
+      operationId: transferCourtOwnership
+      parameters:
+        - $ref: '#/components/parameters/FieldId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [targetOwnerId]
+              properties:
+                targetOwnerId:
+                  type: string
+                  format: uuid
+      responses:
+        '200':
+          description: Ownership transferred
+        '400':
+          description: Target owner not verified
+
+  /api/fields/owner/me:
+    get:
+      tags: [Courts]
+      summary: List courts owned by current user
+      description: Returns all courts belonging to the authenticated court owner.
+      operationId: getOwnedCourts
+      responses:
+        '200':
+          description: List of owned courts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  courts:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Court'
+
+
+  # ─── Availability ───────────────────────────────────────────────────────────
+  /api/fields/{fieldId}/availability:
+    get:
+      tags: [Availability]
+      summary: Get court availability
+      description: Returns available time slots for a court on a given date. Served from Redis cache with real-time updates.
+      operationId: getCourtAvailability
+      parameters:
+        - $ref: '#/components/parameters/FieldId'
+        - name: date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: durationMinutes
+          in: query
+          schema:
+            type: integer
+          description: Override default duration for slot calculation
+      responses:
+        '200':
+          description: Available time slots
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvailabilityResponse'
+
+  /api/fields/{fieldId}/availability/windows:
+    get:
+      tags: [Availability]
+      summary: Get recurring availability windows
+      description: Returns the court's recurring weekly schedule. COURT_OWNER only.
+      operationId: getAvailabilityWindows
+      parameters:
+        - $ref: '#/components/parameters/FieldId'
+      responses:
+        '200':
+          description: Availability windows
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  windows:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AvailabilityWindow'
+    put:
+      tags: [Availability]
+      summary: Update recurring availability windows
+      description: Sets the court's recurring weekly schedule. COURT_OWNER only.
+      operationId: updateAvailabilityWindows
+      parameters:
+        - $ref: '#/components/parameters/FieldId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [windows]
+              properties:
+                windows:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/AvailabilityWindow'
+      responses:
+        '200':
+          description: Windows updated
+        '400':
+          description: Overlapping or invalid time ranges
+
+  /api/fields/{fieldId}/availability/overrides:
+    get:
+      tags: [Availability]
+      summary: Get availability overrides
+      description: Returns manual date/time overrides (maintenance, holidays, private events).
+      operationId: getAvailabilityOverrides
+      parameters:
+        - $ref: '#/components/parameters/FieldId'
+        - name: fromDate
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: toDate
+          in: query
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Overrides list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  overrides:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AvailabilityOverride'
+    post:
+      tags: [Availability]
+      summary: Create availability override
+      description: Blocks specific dates/times. May trigger cancellation of conflicting recurring bookings.
+      operationId: createAvailabilityOverride
+      parameters:
+        - $ref: '#/components/parameters/FieldId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AvailabilityOverride'
+      responses:
+        '201':
+          description: Override created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvailabilityOverride'
+
+  /api/fields/{fieldId}/availability/overrides/{overrideId}:
+    delete:
+      tags: [Availability]
+      summary: Remove availability override
+      operationId: deleteAvailabilityOverride
+      parameters:
+        - $ref: '#/components/parameters/FieldId'
+        - name: overrideId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Override removed
+
+  # ─── Weather ────────────────────────────────────────────────────────────────
+  /api/weather:
+    get:
+      tags: [Weather]
+      summary: Get weather forecast
+      description: |
+        Returns weather forecast for a location and date/time. Only available for dates within
+        7-day window. Returns 404 with "not yet available" message for dates beyond range.
+        Cached in Redis with 5-10 minute TTL.
+      operationId: getWeatherForecast
+      parameters:
+        - name: latitude
+          in: query
+          required: true
+          schema:
+            type: number
+            format: double
+        - name: longitude
+          in: query
+          required: true
+          schema:
+            type: number
+            format: double
+        - name: date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: time
+          in: query
+          schema:
+            type: string
+            format: time
+      responses:
+        '200':
+          description: Weather forecast
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WeatherForecast'
+        '404':
+          description: Forecast not yet available (date beyond 7-day window)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ─── Map Aggregated Endpoint ────────────────────────────────────────────────
+  /api/fields/map:
+    get:
+      tags: [Courts]
+      summary: Aggregated map data
+      description: |
+        Single endpoint returning courts, open matches, and weather in one response.
+        Optimized for map view rendering to minimize round trips.
+      operationId: getMapData
+      parameters:
+        - name: latitude
+          in: query
+          required: true
+          schema:
+            type: number
+            format: double
+        - name: longitude
+          in: query
+          required: true
+          schema:
+            type: number
+            format: double
+        - name: radiusKm
+          in: query
+          schema:
+            type: number
+            format: double
+            default: 10
+        - name: minLat
+          in: query
+          schema:
+            type: number
+            format: double
+        - name: maxLat
+          in: query
+          schema:
+            type: number
+            format: double
+        - name: minLng
+          in: query
+          schema:
+            type: number
+            format: double
+        - name: maxLng
+          in: query
+          schema:
+            type: number
+            format: double
+        - name: courtType
+          in: query
+          schema:
+            $ref: '#/components/schemas/CourtType'
+        - name: locationType
+          in: query
+          schema:
+            $ref: '#/components/schemas/LocationType'
+        - name: date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: startTime
+          in: query
+          schema:
+            type: string
+            format: time
+      responses:
+        '200':
+          description: Aggregated map data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MapDataResponse'
+
+  # ─── Favorites ──────────────────────────────────────────────────────────────
+  /api/users/me/favorites:
+    get:
+      tags: [Favorites]
+      summary: List favorite courts
+      operationId: getFavorites
+      responses:
+        '200':
+          description: Favorite courts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  favorites:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CourtSummary'
+
+  /api/users/me/favorites/{fieldId}:
+    put:
+      tags: [Favorites]
+      summary: Add court to favorites
+      operationId: addFavorite
+      parameters:
+        - $ref: '#/components/parameters/FieldId'
+      responses:
+        '204':
+          description: Added to favorites
+    delete:
+      tags: [Favorites]
+      summary: Remove court from favorites
+      operationId: removeFavorite
+      parameters:
+        - $ref: '#/components/parameters/FieldId'
+      responses:
+        '204':
+          description: Removed from favorites
+
+  # ─── Ratings ────────────────────────────────────────────────────────────────
+  /api/fields/{fieldId}/ratings:
+    get:
+      tags: [Ratings]
+      summary: Get court ratings and reviews
+      operationId: getCourtRatings
+      parameters:
+        - $ref: '#/components/parameters/FieldId'
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: size
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: Ratings and reviews
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RatingsResponse'
+    post:
+      tags: [Ratings]
+      summary: Submit court rating and review
+      description: Only allowed after a completed booking at this court. CUSTOMER role only.
+      operationId: submitRating
+      parameters:
+        - $ref: '#/components/parameters/FieldId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRatingRequest'
+      responses:
+        '201':
+          description: Rating submitted
+        '400':
+          description: No completed booking found for this court
+        '409':
+          description: Already rated this booking
+
+
+  # ─── Pricing ────────────────────────────────────────────────────────────────
+  /api/fields/{fieldId}/pricing:
+    get:
+      tags: [Pricing]
+      summary: Get dynamic pricing rules
+      operationId: getPricingRules
+      parameters:
+        - $ref: '#/components/parameters/FieldId'
+      responses:
+        '200':
+          description: Pricing rules
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PricingRules'
+    put:
+      tags: [Pricing]
+      summary: Update dynamic pricing rules
+      description: Configure peak/off-peak multipliers by day and time. COURT_OWNER only.
+      operationId: updatePricingRules
+      parameters:
+        - $ref: '#/components/parameters/FieldId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PricingRules'
+      responses:
+        '200':
+          description: Pricing rules updated
+
+  /api/fields/{fieldId}/cancellation-policy:
+    get:
+      tags: [Pricing]
+      summary: Get cancellation policy
+      operationId: getCancellationPolicy
+      parameters:
+        - $ref: '#/components/parameters/FieldId'
+      responses:
+        '200':
+          description: Cancellation policy tiers
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CancellationPolicy'
+    put:
+      tags: [Pricing]
+      summary: Update cancellation policy
+      description: |
+        Configure time-based refund tiers. Platform fee is always non-refundable.
+        If not configured, default policy applies (24h+=100%, 12-24h=50%, <12h=0%).
+      operationId: updateCancellationPolicy
+      parameters:
+        - $ref: '#/components/parameters/FieldId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancellationPolicy'
+      responses:
+        '200':
+          description: Policy updated
+
+  # ─── Promo Codes ────────────────────────────────────────────────────────────
+  /api/promo-codes:
+    get:
+      tags: [Promo Codes]
+      summary: List promo codes
+      description: Court owners see their own codes. PLATFORM_ADMIN sees all including platform-wide codes.
+      operationId: listPromoCodes
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: size
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: Promo codes list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromoCodeListResponse'
+    post:
+      tags: [Promo Codes]
+      summary: Create promo code
+      description: |
+        COURT_OWNER creates court-level codes (scoped to their courts).
+        PLATFORM_ADMIN creates platform-wide codes.
+      operationId: createPromoCode
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePromoCodeRequest'
+      responses:
+        '201':
+          description: Promo code created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromoCode'
+
+  /api/promo-codes/{code}/validate:
+    get:
+      tags: [Promo Codes]
+      summary: Validate a promo code
+      description: Checks if a promo code is valid for a given court and booking. Used during booking flow.
+      operationId: validatePromoCode
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: fieldId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: bookingDate
+          in: query
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Promo code validation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromoCodeValidation'
+
+  # ─── Analytics ──────────────────────────────────────────────────────────────
+  /api/analytics/revenue:
+    get:
+      tags: [Analytics]
+      summary: Get revenue analytics
+      description: |
+        COURT_OWNER: revenue for own courts. PLATFORM_ADMIN: platform-wide revenue.
+        Queries run against read replica to avoid impacting booking performance.
+      operationId: getRevenueAnalytics
+      parameters:
+        - name: fromDate
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: toDate
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: fieldId
+          in: query
+          schema:
+            type: string
+            format: uuid
+          description: Filter by specific court (optional)
+        - name: courtType
+          in: query
+          schema:
+            $ref: '#/components/schemas/CourtType'
+      responses:
+        '200':
+          description: Revenue analytics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevenueAnalytics'
+
+  /api/analytics/usage:
+    get:
+      tags: [Analytics]
+      summary: Get usage analytics
+      description: Booking patterns, peak hours, occupancy rates.
+      operationId: getUsageAnalytics
+      parameters:
+        - name: fromDate
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: toDate
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: fieldId
+          in: query
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Usage analytics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageAnalytics'
+
+  /api/analytics/export:
+    get:
+      tags: [Analytics]
+      summary: Export analytics report
+      description: Download report in CSV or PDF format.
+      operationId: exportAnalytics
+      parameters:
+        - name: format
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [CSV, PDF]
+        - name: reportType
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [REVENUE, USAGE]
+        - name: fromDate
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: toDate
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Report file
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+
+  # ─── Feature Flags (PLATFORM_ADMIN) ─────────────────────────────────────────
+  /api/feature-flags:
+    get:
+      tags: [Feature Flags]
+      summary: List all feature flags
+      description: Returns current state of all feature flags. Public endpoint returns only flag states; admin endpoint returns full config.
+      operationId: getFeatureFlags
+      responses:
+        '200':
+          description: Feature flags
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  flags:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/FeatureFlag'
+
+  /api/feature-flags/{flagKey}:
+    put:
+      tags: [Feature Flags]
+      summary: Update feature flag
+      description: Enable/disable a feature flag. PLATFORM_ADMIN only.
+      operationId: updateFeatureFlag
+      parameters:
+        - name: flagKey
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FeatureFlag'
+      responses:
+        '200':
+          description: Flag updated
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  # ─── Stripe Connect ────────────────────────────────────────────────────────
+  /api/users/me/stripe-connect:
+    get:
+      tags: [Stripe Connect]
+      summary: Get Stripe Connect status
+      description: Returns the court owner's Stripe Connect account status and payout info.
+      operationId: getStripeConnectStatus
+      responses:
+        '200':
+          description: Stripe Connect status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StripeConnectStatus'
+
+  /api/users/me/stripe-connect/onboard:
+    post:
+      tags: [Stripe Connect]
+      summary: Initiate Stripe Connect onboarding
+      description: Returns a Stripe hosted onboarding URL for identity verification and bank account linking.
+      operationId: initiateStripeOnboarding
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                returnUrl:
+                  type: string
+                  format: uri
+                  description: URL to redirect after onboarding
+                refreshUrl:
+                  type: string
+                  format: uri
+                  description: URL if onboarding link expires
+      responses:
+        '200':
+          description: Onboarding URL
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  onboardingUrl:
+                    type: string
+                    format: uri
+
+  /api/users/me/stripe-connect/payouts:
+    get:
+      tags: [Stripe Connect]
+      summary: Get payout history
+      description: Returns payout schedule and history for the court owner.
+      operationId: getPayoutHistory
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: size
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: Payout history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PayoutHistoryResponse'
+
+  /api/users/me/stripe-connect/payout-schedule:
+    put:
+      tags: [Stripe Connect]
+      summary: Update payout schedule
+      description: Configure payout frequency (daily, weekly, monthly).
+      operationId: updatePayoutSchedule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [schedule]
+              properties:
+                schedule:
+                  type: string
+                  enum: [DAILY, WEEKLY, MONTHLY]
+      responses:
+        '200':
+          description: Schedule updated
+
+  # ─── Admin (PLATFORM_ADMIN) ────────────────────────────────────────────────
+  /api/admin/users:
+    get:
+      tags: [Admin]
+      summary: List all users
+      description: Paginated user list with filtering. PLATFORM_ADMIN only.
+      operationId: adminListUsers
+      parameters:
+        - name: role
+          in: query
+          schema:
+            type: string
+            enum: [CUSTOMER, COURT_OWNER, PLATFORM_ADMIN]
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [ACTIVE, SUSPENDED, DELETED]
+        - name: search
+          in: query
+          schema:
+            type: string
+          description: Search by name or email
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: size
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: User list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserListResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/admin/users/{userId}/suspend:
+    post:
+      tags: [Admin]
+      summary: Suspend a user
+      description: Suspends a user account. PLATFORM_ADMIN only.
+      operationId: adminSuspendUser
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+      responses:
+        '200':
+          description: User suspended
+
+  /api/admin/users/{userId}/unsuspend:
+    post:
+      tags: [Admin]
+      summary: Unsuspend a user
+      operationId: adminUnsuspendUser
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: User unsuspended
+
+  /api/admin/court-owners/{userId}/verify:
+    post:
+      tags: [Admin]
+      summary: Verify a court owner
+      description: Approves court owner verification. Courts become publicly visible.
+      operationId: adminVerifyCourtOwner
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Court owner verified
+
+  /api/admin/disputes:
+    get:
+      tags: [Admin]
+      summary: List escalated disputes
+      description: Returns payment disputes escalated for platform review. PLATFORM_ADMIN only.
+      operationId: adminListDisputes
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [OPEN, IN_REVIEW, RESOLVED]
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: size
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: Disputes list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminDisputeListResponse'
+
+  /api/admin/disputes/{disputeId}/resolve:
+    post:
+      tags: [Admin]
+      summary: Resolve a dispute
+      operationId: adminResolveDispute
+      parameters:
+        - name: disputeId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resolution]
+              properties:
+                resolution:
+                  type: string
+                  enum: [REFUND_CUSTOMER, SIDE_WITH_OWNER, PARTIAL_REFUND]
+                refundPercentage:
+                  type: integer
+                  minimum: 0
+                  maximum: 100
+                notes:
+                  type: string
+      responses:
+        '200':
+          description: Dispute resolved
+
+  # ─── Support ────────────────────────────────────────────────────────────────
+  /api/support/tickets:
+    post:
+      tags: [Support]
+      summary: Submit a support ticket
+      description: |
+        Creates a new support ticket. Auto-attaches user context (role, subscription status).
+        When submitted from a booking/payment screen, context metadata (bookingId, paymentId) is included.
+      operationId: createSupportTicket
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [category, subject, description]
+              properties:
+                category:
+                  type: string
+                  enum: [BOOKING, PAYMENT, ACCOUNT, TECHNICAL, PAYOUT_ISSUES, OTHER]
+                subject:
+                  type: string
+                  maxLength: 200
+                description:
+                  type: string
+                  maxLength: 5000
+                contextMetadata:
+                  type: string
+                  description: JSON string with auto-attached context (bookingId, paymentId, errorCode, etc.)
+                attachments:
+                  type: array
+                  items:
+                    type: string
+                    format: binary
+                  maxItems: 5
+                  description: Screenshots or images (max 5MB each)
+                diagnosticLogs:
+                  type: string
+                  format: binary
+                  description: Compressed app diagnostic logs (mobile only, max 5MB)
+      responses:
+        '201':
+          description: Ticket created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportTicket'
+    get:
+      tags: [Support]
+      summary: List user's support tickets
+      description: Returns the authenticated user's support tickets.
+      operationId: listUserSupportTickets
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [OPEN, IN_PROGRESS, AWAITING_USER, RESOLVED, CLOSED]
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: size
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: Support tickets
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportTicketListResponse'
+
+  /api/support/tickets/{ticketId}:
+    get:
+      tags: [Support]
+      summary: Get support ticket details
+      description: Returns ticket details including conversation thread. Users see their own tickets; PLATFORM_ADMIN sees all.
+      operationId: getSupportTicketDetails
+      parameters:
+        - $ref: '#/components/parameters/TicketId'
+      responses:
+        '200':
+          description: Ticket details with messages
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportTicketDetail'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/support/tickets/{ticketId}/messages:
+    post:
+      tags: [Support]
+      summary: Add follow-up message to ticket
+      description: User or admin adds a message to the ticket conversation thread.
+      operationId: addTicketMessage
+      parameters:
+        - $ref: '#/components/parameters/TicketId'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message:
+                  type: string
+                  maxLength: 5000
+                attachments:
+                  type: array
+                  items:
+                    type: string
+                    format: binary
+                  maxItems: 3
+      responses:
+        '201':
+          description: Message added
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportMessage'
+
+  /api/support/tickets/{ticketId}/close:
+    post:
+      tags: [Support]
+      summary: Close/resolve a ticket
+      description: User closes their own ticket with optional satisfaction rating.
+      operationId: closeSupportTicket
+      parameters:
+        - $ref: '#/components/parameters/TicketId'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                satisfactionRating:
+                  type: integer
+                  minimum: 1
+                  maximum: 5
+                  nullable: true
+                feedback:
+                  type: string
+                  maxLength: 500
+                  nullable: true
+      responses:
+        '200':
+          description: Ticket closed
+
+  # ─── Admin Support Management ──────────────────────────────────────────────
+  /api/admin/support/tickets:
+    get:
+      tags: [Support, Admin]
+      summary: List all support tickets (admin)
+      description: Returns all support tickets across all users. PLATFORM_ADMIN only.
+      operationId: adminListSupportTickets
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [OPEN, IN_PROGRESS, AWAITING_USER, RESOLVED, CLOSED]
+        - name: category
+          in: query
+          schema:
+            type: string
+            enum: [BOOKING, PAYMENT, ACCOUNT, TECHNICAL, PAYOUT_ISSUES, OTHER]
+        - name: userRole
+          in: query
+          schema:
+            type: string
+            enum: [CUSTOMER, COURT_OWNER]
+        - name: assignedTo
+          in: query
+          schema:
+            type: string
+            format: uuid
+          description: Filter by assigned admin
+        - name: fromDate
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: toDate
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: size
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: All support tickets
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportTicketListResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/admin/support/tickets/{ticketId}/assign:
+    post:
+      tags: [Support, Admin]
+      summary: Assign ticket to admin
+      description: Assigns a support ticket to a PLATFORM_ADMIN user.
+      operationId: adminAssignTicket
+      parameters:
+        - $ref: '#/components/parameters/TicketId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [assigneeId]
+              properties:
+                assigneeId:
+                  type: string
+                  format: uuid
+      responses:
+        '200':
+          description: Ticket assigned
+
+  /api/admin/support/tickets/{ticketId}/status:
+    put:
+      tags: [Support, Admin]
+      summary: Update ticket status (admin)
+      description: Changes ticket status. PLATFORM_ADMIN only.
+      operationId: adminUpdateTicketStatus
+      parameters:
+        - $ref: '#/components/parameters/TicketId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [OPEN, IN_PROGRESS, AWAITING_USER, RESOLVED, CLOSED]
+      responses:
+        '200':
+          description: Status updated
+
+  /api/admin/support/tickets/{ticketId}/notes:
+    post:
+      tags: [Support, Admin]
+      summary: Add internal note to ticket
+      description: Adds an internal note visible only to admins, not to the user.
+      operationId: adminAddInternalNote
+      parameters:
+        - $ref: '#/components/parameters/TicketId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [note]
+              properties:
+                note:
+                  type: string
+                  maxLength: 5000
+      responses:
+        '201':
+          description: Note added
+
+  /api/admin/support/tickets/{ticketId}/user-activity:
+    get:
+      tags: [Support, Admin]
+      summary: Get ticket user's recent activity
+      description: Returns the ticket submitter's last 10 bookings and last 5 payments for diagnosis.
+      operationId: adminGetUserActivity
+      parameters:
+        - $ref: '#/components/parameters/TicketId'
+      responses:
+        '200':
+          description: User activity
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserActivitySummary'
+
+  /api/admin/support/metrics:
+    get:
+      tags: [Support, Admin]
+      summary: Get support metrics
+      description: Returns support performance metrics. PLATFORM_ADMIN only.
+      operationId: adminGetSupportMetrics
+      parameters:
+        - name: fromDate
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: toDate
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Support metrics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportMetrics'
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Components
+# ═══════════════════════════════════════════════════════════════════════════════
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: RS256 JWT access token. See Requirement 1 for claims structure.
+
+  parameters:
+    FieldId:
+      name: fieldId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Court unique identifier
+    TicketId:
+      name: ticketId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Support ticket unique identifier
+
+  responses:
+    BadRequest:
+      description: Invalid request parameters
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Missing or invalid authentication
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Forbidden:
+      description: Insufficient permissions for this operation
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Conflict:
+      description: Resource conflict
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  schemas:
+    # ─── Enums ──────────────────────────────────────────────────────────────
+    CourtType:
+      type: string
+      enum: [TENNIS, PADEL, BASKETBALL, FOOTBALL_5X5]
+
+    LocationType:
+      type: string
+      enum: [INDOOR, OUTDOOR]
+
+    UserRole:
+      type: string
+      enum: [CUSTOMER, COURT_OWNER, PLATFORM_ADMIN]
+
+    BookingConfirmationMode:
+      type: string
+      enum: [INSTANT, MANUAL]
+
+    SubscriptionStatus:
+      type: string
+      enum: [TRIAL, ACTIVE, EXPIRED, NONE]
+
+    StripeAccountStatus:
+      type: string
+      enum: [PENDING, ACTIVE, RESTRICTED, DISABLED, NOT_STARTED]
+
+    # ─── Auth ───────────────────────────────────────────────────────────────
+    RegisterRequest:
+      type: object
+      required: [oauthProvider, oauthToken, role, termsAccepted]
+      properties:
+        oauthProvider:
+          type: string
+          enum: [GOOGLE, FACEBOOK, APPLE]
+        oauthToken:
+          type: string
+          description: OAuth access token from provider
+        role:
+          $ref: '#/components/schemas/UserRole'
+        termsAccepted:
+          type: boolean
+          description: Must be true
+        language:
+          type: string
+          enum: [el, en]
+          default: en
+
+    LoginRequest:
+      type: object
+      required: [oauthProvider, oauthToken]
+      properties:
+        oauthProvider:
+          type: string
+          enum: [GOOGLE, FACEBOOK, APPLE]
+        oauthToken:
+          type: string
+
+    AuthResponse:
+      type: object
+      properties:
+        accessToken:
+          type: string
+          description: JWT access token (15-minute lifetime)
+        refreshToken:
+          type: string
+          description: Refresh token (30-day lifetime)
+        expiresIn:
+          type: integer
+          description: Access token TTL in seconds
+        user:
+          $ref: '#/components/schemas/UserProfile'
+
+    LinkProviderRequest:
+      type: object
+      required: [oauthProvider, oauthToken]
+      properties:
+        oauthProvider:
+          type: string
+          enum: [GOOGLE, FACEBOOK, APPLE]
+        oauthToken:
+          type: string
+
+    OAuthProvider:
+      type: object
+      properties:
+        provider:
+          type: string
+          enum: [GOOGLE, FACEBOOK, APPLE]
+        linkedAt:
+          type: string
+          format: date-time
+        email:
+          type: string
+          format: email
+
+    # ─── Users ──────────────────────────────────────────────────────────────
+    UserProfile:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+        phone:
+          type: string
+        role:
+          $ref: '#/components/schemas/UserRole'
+        language:
+          type: string
+          enum: [el, en]
+        verified:
+          type: boolean
+          description: Court owner verification status
+        stripeConnected:
+          type: boolean
+        subscriptionStatus:
+          $ref: '#/components/schemas/SubscriptionStatus'
+        trialDaysRemaining:
+          type: integer
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+
+    UpdateUserRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        phone:
+          type: string
+        language:
+          type: string
+          enum: [el, en]
+
+    UserPreferences:
+      type: object
+      properties:
+        preferredDays:
+          type: array
+          items:
+            type: string
+            enum: [MONDAY, TUESDAY, WEDNESDAY, THURSDAY, FRIDAY, SATURDAY, SUNDAY]
+        preferredStartTime:
+          type: string
+          format: time
+        preferredEndTime:
+          type: string
+          format: time
+        maxSearchDistanceKm:
+          type: number
+          format: double
+          default: 10
+        notificationPreferences:
+          $ref: '#/components/schemas/NotificationPreferences'
+        doNotDisturbStart:
+          type: string
+          format: time
+          nullable: true
+        doNotDisturbEnd:
+          type: string
+          format: time
+          nullable: true
+
+    NotificationPreferences:
+      type: object
+      properties:
+        bookingEvents:
+          type: boolean
+          default: true
+        favoriteCourtAlerts:
+          type: boolean
+          default: true
+        promotionalNotifications:
+          type: boolean
+          default: true
+        emailNotifications:
+          type: boolean
+          default: true
+        pushNotifications:
+          type: boolean
+          default: true
+
+    SkillLevel:
+      type: object
+      properties:
+        courtType:
+          $ref: '#/components/schemas/CourtType'
+        level:
+          type: integer
+          minimum: 1
+          maximum: 7
+
+    # ─── Courts ─────────────────────────────────────────────────────────────
+    CreateCourtRequest:
+      type: object
+      required: [name, courtType, locationType, latitude, longitude, address, basePrice]
+      properties:
+        name:
+          type: object
+          properties:
+            el:
+              type: string
+            en:
+              type: string
+          required: [el]
+        description:
+          type: object
+          properties:
+            el:
+              type: string
+            en:
+              type: string
+        courtType:
+          $ref: '#/components/schemas/CourtType'
+        locationType:
+          $ref: '#/components/schemas/LocationType'
+        latitude:
+          type: number
+          format: double
+        longitude:
+          type: number
+          format: double
+        address:
+          type: string
+        basePrice:
+          type: number
+          format: decimal
+          description: Base price in EUR
+        durationMinutes:
+          type: integer
+          description: Override default duration for this court type
+        maxCapacity:
+          type: integer
+          description: Override default capacity for this court type
+        confirmationMode:
+          $ref: '#/components/schemas/BookingConfirmationMode'
+        waitlistEnabled:
+          type: boolean
+          default: false
+        amenities:
+          type: array
+          items:
+            type: string
+
+    UpdateCourtRequest:
+      type: object
+      properties:
+        name:
+          type: object
+          properties:
+            el:
+              type: string
+            en:
+              type: string
+        description:
+          type: object
+          properties:
+            el:
+              type: string
+            en:
+              type: string
+        locationType:
+          $ref: '#/components/schemas/LocationType'
+        address:
+          type: string
+        basePrice:
+          type: number
+          format: decimal
+        durationMinutes:
+          type: integer
+        maxCapacity:
+          type: integer
+        amenities:
+          type: array
+          items:
+            type: string
+
+    Court:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        ownerId:
+          type: string
+          format: uuid
+        name:
+          type: object
+          properties:
+            el:
+              type: string
+            en:
+              type: string
+        description:
+          type: object
+          properties:
+            el:
+              type: string
+            en:
+              type: string
+        courtType:
+          $ref: '#/components/schemas/CourtType'
+        locationType:
+          $ref: '#/components/schemas/LocationType'
+        latitude:
+          type: number
+          format: double
+        longitude:
+          type: number
+          format: double
+        address:
+          type: string
+        basePrice:
+          type: number
+          format: decimal
+        durationMinutes:
+          type: integer
+        maxCapacity:
+          type: integer
+        confirmationMode:
+          $ref: '#/components/schemas/BookingConfirmationMode'
+        waitlistEnabled:
+          type: boolean
+        amenities:
+          type: array
+          items:
+            type: string
+        imageUrls:
+          type: array
+          items:
+            type: string
+            format: uri
+        averageRating:
+          type: number
+          format: double
+          nullable: true
+        totalReviews:
+          type: integer
+        visible:
+          type: boolean
+          description: Whether court is publicly visible (depends on owner verification)
+        createdAt:
+          type: string
+          format: date-time
+
+    CourtSummary:
+      type: object
+      description: Lightweight court representation for lists and map markers
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        courtType:
+          $ref: '#/components/schemas/CourtType'
+        locationType:
+          $ref: '#/components/schemas/LocationType'
+        latitude:
+          type: number
+          format: double
+        longitude:
+          type: number
+          format: double
+        basePrice:
+          type: number
+          format: decimal
+        distanceKm:
+          type: number
+          format: double
+          nullable: true
+        averageRating:
+          type: number
+          format: double
+          nullable: true
+        availabilityStatus:
+          type: string
+          enum: [AVAILABLE, FULLY_BOOKED, WAITLIST_AVAILABLE]
+        isFavorite:
+          type: boolean
+
+    CourtDetail:
+      allOf:
+        - $ref: '#/components/schemas/Court'
+        - type: object
+          properties:
+            distanceKm:
+              type: number
+              format: double
+              nullable: true
+            isFavorite:
+              type: boolean
+            ownerName:
+              type: string
+            cancellationPolicy:
+              $ref: '#/components/schemas/CancellationPolicy'
+            pricingRules:
+              $ref: '#/components/schemas/PricingRules'
+            weather:
+              $ref: '#/components/schemas/WeatherForecast'
+            availableSlots:
+              type: array
+              items:
+                $ref: '#/components/schemas/TimeSlot'
+
+    CourtSearchResponse:
+      type: object
+      properties:
+        courts:
+          type: array
+          items:
+            $ref: '#/components/schemas/CourtSummary'
+        totalElements:
+          type: integer
+        page:
+          type: integer
+        size:
+          type: integer
+
+    # ─── Availability ───────────────────────────────────────────────────────
+    TimeSlot:
+      type: object
+      properties:
+        startTime:
+          type: string
+          format: time
+        endTime:
+          type: string
+          format: time
+        status:
+          type: string
+          enum: [AVAILABLE, BOOKED, TEMPORARILY_HELD, BLOCKED]
+        price:
+          type: number
+          format: decimal
+          description: Calculated price including dynamic pricing
+
+    AvailabilityResponse:
+      type: object
+      properties:
+        fieldId:
+          type: string
+          format: uuid
+        date:
+          type: string
+          format: date
+        timezone:
+          type: string
+          description: Court's timezone (e.g., Europe/Athens)
+        slots:
+          type: array
+          items:
+            $ref: '#/components/schemas/TimeSlot'
+
+    AvailabilityWindow:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        dayOfWeek:
+          type: string
+          enum: [MONDAY, TUESDAY, WEDNESDAY, THURSDAY, FRIDAY, SATURDAY, SUNDAY]
+        startTime:
+          type: string
+          format: time
+        endTime:
+          type: string
+          format: time
+
+    AvailabilityOverride:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        date:
+          type: string
+          format: date
+        startTime:
+          type: string
+          format: time
+          nullable: true
+          description: If null, blocks entire day
+        endTime:
+          type: string
+          format: time
+          nullable: true
+        reason:
+          type: string
+          description: Maintenance, holiday, private event, etc.
+
+    # ─── Weather ────────────────────────────────────────────────────────────
+    WeatherForecast:
+      type: object
+      properties:
+        date:
+          type: string
+          format: date
+        time:
+          type: string
+          format: time
+          nullable: true
+        temperature:
+          type: number
+          format: double
+          description: Temperature in Celsius
+        precipitationProbability:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Percentage
+        windSpeedKmh:
+          type: number
+          format: double
+        humidity:
+          type: integer
+          minimum: 0
+          maximum: 100
+        condition:
+          type: string
+          description: Weather condition (sunny, cloudy, rainy, etc.)
+        icon:
+          type: string
+          description: Weather icon code
+        recommendation:
+          type: string
+          enum: [INDOOR_RECOMMENDED, OUTDOOR_RECOMMENDED, NEUTRAL]
+        available:
+          type: boolean
+          description: False if date is beyond 7-day forecast window
+
+    # ─── Map ────────────────────────────────────────────────────────────────
+    MapDataResponse:
+      type: object
+      properties:
+        courts:
+          type: array
+          items:
+            $ref: '#/components/schemas/CourtSummary'
+        openMatches:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpenMatchSummary'
+        weather:
+          $ref: '#/components/schemas/WeatherForecast'
+
+    OpenMatchSummary:
+      type: object
+      properties:
+        matchId:
+          type: string
+          format: uuid
+        fieldId:
+          type: string
+          format: uuid
+        courtName:
+          type: string
+        courtType:
+          $ref: '#/components/schemas/CourtType'
+        latitude:
+          type: number
+          format: double
+        longitude:
+          type: number
+          format: double
+        creatorName:
+          type: string
+        creatorSkillLevel:
+          type: integer
+        skillRangeMin:
+          type: integer
+        skillRangeMax:
+          type: integer
+        currentPlayers:
+          type: integer
+        maxPlayers:
+          type: integer
+        costPerPlayer:
+          type: number
+          format: decimal
+        date:
+          type: string
+          format: date
+        startTime:
+          type: string
+          format: time
+        autoAccept:
+          type: boolean
+
+    # ─── Ratings ────────────────────────────────────────────────────────────
+    RatingsResponse:
+      type: object
+      properties:
+        averageRating:
+          type: number
+          format: double
+        totalReviews:
+          type: integer
+        reviews:
+          type: array
+          items:
+            $ref: '#/components/schemas/Review'
+        page:
+          type: integer
+        size:
+          type: integer
+
+    Review:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        customerName:
+          type: string
+        rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+        comment:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+
+    CreateRatingRequest:
+      type: object
+      required: [bookingId, rating]
+      properties:
+        bookingId:
+          type: string
+          format: uuid
+        rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+        comment:
+          type: string
+          maxLength: 1000
+
+    # ─── Pricing ────────────────────────────────────────────────────────────
+    PricingRules:
+      type: object
+      properties:
+        rules:
+          type: array
+          items:
+            $ref: '#/components/schemas/PricingRule'
+        specialDates:
+          type: array
+          items:
+            $ref: '#/components/schemas/SpecialDatePricing'
+
+    PricingRule:
+      type: object
+      properties:
+        dayOfWeek:
+          type: string
+          enum: [MONDAY, TUESDAY, WEDNESDAY, THURSDAY, FRIDAY, SATURDAY, SUNDAY]
+        startTime:
+          type: string
+          format: time
+        endTime:
+          type: string
+          format: time
+        multiplier:
+          type: number
+          format: double
+          description: Price multiplier (e.g., 1.5 for 50% peak surcharge)
+
+    SpecialDatePricing:
+      type: object
+      properties:
+        date:
+          type: string
+          format: date
+        multiplier:
+          type: number
+          format: double
+        label:
+          type: string
+          description: e.g., "Christmas", "National Holiday"
+
+    CancellationPolicy:
+      type: object
+      properties:
+        tiers:
+          type: array
+          items:
+            $ref: '#/components/schemas/CancellationTier'
+          description: Ordered by threshold descending. Default if empty - 24h=100%, 12h=50%, 0h=0%
+
+    CancellationTier:
+      type: object
+      properties:
+        thresholdHours:
+          type: integer
+          description: Hours before booking start
+        refundPercentage:
+          type: integer
+          minimum: 0
+          maximum: 100
+
+    # ─── Promo Codes ────────────────────────────────────────────────────────
+    PromoCode:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        code:
+          type: string
+        discountType:
+          type: string
+          enum: [PERCENTAGE, FIXED_AMOUNT]
+        discountValue:
+          type: number
+          format: decimal
+        validFrom:
+          type: string
+          format: date-time
+        validUntil:
+          type: string
+          format: date-time
+        maxUsages:
+          type: integer
+          nullable: true
+        currentUsages:
+          type: integer
+        applicableCourtTypes:
+          type: array
+          items:
+            $ref: '#/components/schemas/CourtType'
+          nullable: true
+        scope:
+          type: string
+          enum: [COURT_OWNER, PLATFORM]
+        createdAt:
+          type: string
+          format: date-time
+
+    CreatePromoCodeRequest:
+      type: object
+      required: [code, discountType, discountValue, validFrom, validUntil]
+      properties:
+        code:
+          type: string
+          minLength: 3
+          maxLength: 20
+        discountType:
+          type: string
+          enum: [PERCENTAGE, FIXED_AMOUNT]
+        discountValue:
+          type: number
+          format: decimal
+        validFrom:
+          type: string
+          format: date-time
+        validUntil:
+          type: string
+          format: date-time
+        maxUsages:
+          type: integer
+          nullable: true
+        applicableCourtTypes:
+          type: array
+          items:
+            $ref: '#/components/schemas/CourtType'
+          nullable: true
+
+    PromoCodeValidation:
+      type: object
+      properties:
+        valid:
+          type: boolean
+        discountType:
+          type: string
+          enum: [PERCENTAGE, FIXED_AMOUNT]
+        discountValue:
+          type: number
+          format: decimal
+        reason:
+          type: string
+          nullable: true
+          description: Reason if invalid (expired, usage limit reached, wrong court type)
+
+    PromoCodeListResponse:
+      type: object
+      properties:
+        promoCodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/PromoCode'
+        totalElements:
+          type: integer
+        page:
+          type: integer
+        size:
+          type: integer
+
+    # ─── Analytics ──────────────────────────────────────────────────────────
+    RevenueAnalytics:
+      type: object
+      properties:
+        totalEarnings:
+          type: number
+          format: decimal
+        platformFees:
+          type: number
+          format: decimal
+        netPayouts:
+          type: number
+          format: decimal
+        revenueByCourtType:
+          type: object
+          additionalProperties:
+            type: number
+            format: decimal
+        revenueByCourt:
+          type: array
+          items:
+            type: object
+            properties:
+              fieldId:
+                type: string
+                format: uuid
+              courtName:
+                type: string
+              revenue:
+                type: number
+                format: decimal
+        period:
+          type: object
+          properties:
+            fromDate:
+              type: string
+              format: date
+            toDate:
+              type: string
+              format: date
+
+    UsageAnalytics:
+      type: object
+      properties:
+        totalBookings:
+          type: integer
+        occupancyRate:
+          type: number
+          format: double
+          description: Percentage
+        peakHours:
+          type: array
+          items:
+            type: object
+            properties:
+              dayOfWeek:
+                type: string
+              hour:
+                type: integer
+              bookingCount:
+                type: integer
+        busiestDays:
+          type: array
+          items:
+            type: object
+            properties:
+              dayOfWeek:
+                type: string
+              bookingCount:
+                type: integer
+
+    # ─── Feature Flags ──────────────────────────────────────────────────────
+    FeatureFlag:
+      type: object
+      properties:
+        key:
+          type: string
+        enabled:
+          type: boolean
+        description:
+          type: string
+        environment:
+          type: string
+          nullable: true
+          description: If set, flag applies only to this environment
+
+    # ─── Stripe Connect ─────────────────────────────────────────────────────
+    StripeConnectStatus:
+      type: object
+      properties:
+        status:
+          $ref: '#/components/schemas/StripeAccountStatus'
+        payoutSchedule:
+          type: string
+          enum: [DAILY, WEEKLY, MONTHLY]
+          nullable: true
+        nextPayoutDate:
+          type: string
+          format: date
+          nullable: true
+        requiresAction:
+          type: boolean
+          description: True if Stripe requires additional info from the court owner
+
+    PayoutHistoryResponse:
+      type: object
+      properties:
+        payouts:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              amount:
+                type: number
+                format: decimal
+              currency:
+                type: string
+                default: EUR
+              status:
+                type: string
+                enum: [PENDING, IN_TRANSIT, PAID, FAILED]
+              arrivalDate:
+                type: string
+                format: date
+        totalElements:
+          type: integer
+        page:
+          type: integer
+        size:
+          type: integer
+
+    # ─── Admin ──────────────────────────────────────────────────────────────
+    AdminUserListResponse:
+      type: object
+      properties:
+        users:
+          type: array
+          items:
+            $ref: '#/components/schemas/UserProfile'
+        totalElements:
+          type: integer
+        page:
+          type: integer
+        size:
+          type: integer
+
+    AdminDisputeListResponse:
+      type: object
+      properties:
+        disputes:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                format: uuid
+              bookingId:
+                type: string
+                format: uuid
+              customerId:
+                type: string
+                format: uuid
+              courtOwnerId:
+                type: string
+                format: uuid
+              amount:
+                type: number
+                format: decimal
+              reason:
+                type: string
+              status:
+                type: string
+                enum: [OPEN, IN_REVIEW, RESOLVED]
+              createdAt:
+                type: string
+                format: date-time
+        totalElements:
+          type: integer
+        page:
+          type: integer
+        size:
+          type: integer
+
+    # ─── Support ──────────────────────────────────────────────────────────
+    SupportTicket:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        referenceNumber:
+          type: string
+          description: Human-readable reference (e.g., FB-20260207-001)
+        userId:
+          type: string
+          format: uuid
+        userRole:
+          $ref: '#/components/schemas/UserRole'
+        category:
+          type: string
+          enum: [BOOKING, PAYMENT, ACCOUNT, TECHNICAL, PAYOUT_ISSUES, OTHER]
+        subject:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+          enum: [OPEN, IN_PROGRESS, AWAITING_USER, RESOLVED, CLOSED]
+        contextMetadata:
+          type: object
+          nullable: true
+          description: Auto-attached context (bookingId, paymentId, errorCode, stripeStatus, etc.)
+        attachmentUrls:
+          type: array
+          items:
+            type: string
+            format: uri
+        hasDiagnosticLogs:
+          type: boolean
+        assignedAdminId:
+          type: string
+          format: uuid
+          nullable: true
+        satisfactionRating:
+          type: integer
+          minimum: 1
+          maximum: 5
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        resolvedAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    SupportTicketDetail:
+      allOf:
+        - $ref: '#/components/schemas/SupportTicket'
+        - type: object
+          properties:
+            messages:
+              type: array
+              items:
+                $ref: '#/components/schemas/SupportMessage'
+            internalNotes:
+              type: array
+              items:
+                $ref: '#/components/schemas/SupportInternalNote'
+              description: Only included for PLATFORM_ADMIN requests
+            diagnosticLogUrl:
+              type: string
+              format: uri
+              nullable: true
+              description: Download URL for diagnostic logs (admin only)
+
+    SupportMessage:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        senderId:
+          type: string
+          format: uuid
+        senderName:
+          type: string
+        senderRole:
+          type: string
+          enum: [USER, ADMIN]
+        message:
+          type: string
+        attachmentUrls:
+          type: array
+          items:
+            type: string
+            format: uri
+        sentAt:
+          type: string
+          format: date-time
+
+    SupportInternalNote:
+      type: object
+      description: Internal admin note, not visible to the user
+      properties:
+        id:
+          type: string
+          format: uuid
+        adminId:
+          type: string
+          format: uuid
+        adminName:
+          type: string
+        note:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+
+    SupportTicketListResponse:
+      type: object
+      properties:
+        tickets:
+          type: array
+          items:
+            $ref: '#/components/schemas/SupportTicket'
+        totalElements:
+          type: integer
+        page:
+          type: integer
+        size:
+          type: integer
+
+    UserActivitySummary:
+      type: object
+      description: Recent user activity for support diagnosis
+      properties:
+        userId:
+          type: string
+          format: uuid
+        userName:
+          type: string
+        userRole:
+          $ref: '#/components/schemas/UserRole'
+        recentBookings:
+          type: array
+          maxItems: 10
+          items:
+            type: object
+            properties:
+              bookingId:
+                type: string
+                format: uuid
+              courtName:
+                type: string
+              date:
+                type: string
+                format: date
+              status:
+                type: string
+              amount:
+                type: number
+                format: decimal
+        recentPayments:
+          type: array
+          maxItems: 5
+          items:
+            type: object
+            properties:
+              paymentId:
+                type: string
+                format: uuid
+              amount:
+                type: number
+                format: decimal
+              status:
+                type: string
+              createdAt:
+                type: string
+                format: date-time
+        stripeConnectStatus:
+          type: string
+          nullable: true
+          description: Only for COURT_OWNER
+        subscriptionStatus:
+          type: string
+          nullable: true
+          description: Only for COURT_OWNER
+
+    SupportMetrics:
+      type: object
+      properties:
+        totalTickets:
+          type: integer
+        openTickets:
+          type: integer
+        averageResponseTimeMinutes:
+          type: number
+          format: double
+        averageResolutionTimeHours:
+          type: number
+          format: double
+        ticketsByCategory:
+          type: object
+          additionalProperties:
+            type: integer
+        ticketsByStatus:
+          type: object
+          additionalProperties:
+            type: integer
+        averageSatisfactionRating:
+          type: number
+          format: double
+          nullable: true
+        period:
+          type: object
+          properties:
+            fromDate:
+              type: string
+              format: date
+            toDate:
+              type: string
+              format: date
+
+    # ─── Common ─────────────────────────────────────────────────────────────
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Error code
+        message:
+          type: string
+          description: Human-readable message (localized to user's language)
+        details:
+          type: object
+          nullable: true
+          description: Additional error details
+        timestamp:
+          type: string
+          format: date-time
+        correlationId:
+          type: string
+          description: Request correlation ID for tracing

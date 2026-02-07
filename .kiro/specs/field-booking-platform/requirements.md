@@ -107,7 +107,8 @@ graph TB
 ### Service Responsibilities
 
 **Platform Service (Spring Boot)**
-- User authentication and authorization (OAuth integration with biometric support)
+- User authentication and authorization (OAuth integration with biometric support, JWT issuance with role-based claims, refresh token management)
+- Role-based access control enforcement (CUSTOMER, COURT_OWNER, PLATFORM_ADMIN) per authorization matrix
 - User registration with terms and conditions
 - User account management (profile updates, account deletion, GDPR compliance)
 - Player skill level management and matchmaking profiles
@@ -123,6 +124,8 @@ graph TB
 - Analytics and revenue reporting (using read replica for heavy queries)
 - Database schema management (Flyway migrations)
 - Feature flag management (advertisements, premium features)
+- Platform admin operations (user management, dispute escalation, platform-wide promo codes)
+- Support ticket management (creation, assignment, responses, metrics)
 - Multi-language content management
 
 **Transaction Service (Spring Boot)**
@@ -175,7 +178,7 @@ graph TB
 - **Load Balancer**: Automatic SSL/TLS with Let's Encrypt certificates
 - **VPC**: Private networking between services
 - **Firewall Rules**: Kubernetes network policies for service isolation
-- **Secrets Management**: Application secrets (Stripe API keys, OAuth client secrets, database passwords, FCM server keys, SendGrid API keys) stored as DigitalOcean environment variables or in a dedicated secrets store. Synced to Kubernetes via External Secrets Operator. For MVP, Kubernetes Sealed Secrets (encrypted in Git) are acceptable. Migration path to HashiCorp Vault when operational maturity justifies it.
+- **Secrets Management**: Application secrets (JWT signing key pair (RS256 private/public), Stripe API keys, OAuth client secrets, database passwords, FCM server keys, SendGrid API keys, internal API key for service-to-service auth) stored as DigitalOcean environment variables or in a dedicated secrets store. Synced to Kubernetes via External Secrets Operator. For MVP, Kubernetes Sealed Secrets (encrypted in Git) are acceptable. Migration path to HashiCorp Vault when operational maturity justifies it.
 - **Secret Rotation**: Database passwords and API keys should support rotation without service restart via External Secrets Operator refresh intervals
 
 **Observability & Monitoring**
@@ -208,10 +211,10 @@ graph TB
 **Synchronous (REST APIs)**
 - Client applications → NGINX Ingress (path-based routing) → Platform Service or Transaction Service
 - **Routing Rules (NGINX Ingress):**
-  - `/api/auth/*`, `/api/users/*`, `/api/fields/*`, `/api/weather/*`, `/api/analytics/*`, `/api/promo-codes/*`, `/api/feature-flags/*` → Platform Service
+  - `/api/auth/*`, `/api/users/*`, `/api/fields/*`, `/api/weather/*`, `/api/analytics/*`, `/api/promo-codes/*`, `/api/feature-flags/*`, `/api/admin/*`, `/api/support/*` → Platform Service
   - `/api/bookings/*`, `/api/payments/*`, `/api/notifications/*`, `/api/waitlist/*`, `/api/matches/*`, `/api/split-payments/*` → Transaction Service
   - `/ws/*` (WebSocket upgrade) → Transaction Service
-- **Auth token validation**: Both services validate JWT tokens independently using a shared public key. NGINX Ingress performs initial token presence check; services perform full validation and role-based authorization.
+- **Auth token validation**: Both services validate JWT access tokens independently using a shared public key (RS256). NGINX Ingress performs initial token presence check; services perform full validation including signature verification, expiration check, and role-based authorization per the authorization matrix defined in Requirement 1. Token refresh is handled exclusively by Platform Service (`POST /api/auth/refresh`).
 - Transaction Service → Platform Service (court validation, pricing rules, player skill levels) — internal HTTP calls within the cluster, bypassing ingress
 - Transaction Service → Stripe (payment authorization and capture)
 - Platform Service → OAuth Providers (authentication)
@@ -251,7 +254,7 @@ graph TB
 - **Clustering**: Quartz SHALL use JDBC-based job store with `org.quartz.jobStore.isClustered=true` to ensure only one pod executes each scheduled job when running multiple Transaction Service replicas
 
 **Database Ownership (Shared PostgreSQL, Separate Schemas)**
-- Platform Service schema: users, courts, availability_windows, favorites, preferences, oauth_providers, skill_levels, court_ratings, promo_codes, pricing_rules, translations
+- Platform Service schema: users, roles, refresh_tokens, courts, availability_windows, favorites, preferences, oauth_providers, skill_levels, court_ratings, promo_codes, pricing_rules, translations, feature_flags, support_tickets, support_messages, support_attachments
 - Transaction Service schema: bookings, payments, notifications, device_tokens, audit_logs, waitlists, open_matches, split_payments, scheduled_jobs
 - **Cross-schema access rule**: Transaction Service schema has read-only access to Platform Service schema through defined database views (e.g., `platform.v_court_summary`, `platform.v_user_basic`). This avoids HTTP round-trips for simple data lookups (receipt generation, booking display) while maintaining strict write ownership boundaries. Platform Service owns all write operations to its schema.
 - Read replica used by Platform Service for analytics queries to avoid impacting booking performance
@@ -393,9 +396,9 @@ graph TD
 **Step 1: Authentication**
 - User opens mobile app
 - If not authenticated: Login screen with OAuth options (Google, Facebook, Apple)
-- Biometric authentication (fingerprint/face ID) for returning users
+- Biometric authentication (fingerprint/face ID) for returning users — unlocks stored refresh token from device secure enclave, exchanges for new access token
 - Terms and conditions acceptance for new users (must accept before proceeding)
-- Role selection during first registration (customer or court owner)
+- Role selection during first registration (CUSTOMER or COURT_OWNER)
 
 **Step 2: Date & Time Selection**
 - Prominent date picker (calendar view)
@@ -521,6 +524,11 @@ graph TD
   - Configure maximum search distance
   - Notification preferences (booking events, favorites alerts, promotions)
   - Do-not-disturb hours configuration
+  - **Help & Support access:**
+    - Searchable FAQ / Help Center
+    - Submit support ticket (with auto-attached booking context)
+    - View existing tickets and conversation thread
+    - Attach app diagnostic logs for technical issues
 
 ## Court Owner Admin Journey
 
@@ -584,7 +592,7 @@ graph TD
 
 **Step 1: Registration & Verification**
 - Court owner opens admin web portal
-- Registers via OAuth (Google, Facebook, Apple) with "Court Owner" role
+- Registers via OAuth (Google, Facebook, Apple) with COURT_OWNER role
 - Accepts terms and conditions
 - Enters business information for verification
 - Verification status: Pending → can set up courts but they remain hidden from customers
@@ -676,13 +684,19 @@ graph TD
 - Notification preferences (email, push, in-app for booking events)
 - Court ownership transfer to another verified account
 - Account management (profile, linked OAuth providers, account deletion)
+- **Help & Support access:**
+  - Searchable FAQ / Help Center
+  - Submit support ticket (with auto-attached Stripe/subscription context)
+  - Dedicated "Payout Issues" category
+  - View existing tickets and conversation thread
 
 ## Glossary
 
 - **Platform_Service**: Spring Boot microservice handling authentication, user management, and court management
 - **Transaction_Service**: Spring Boot microservice handling booking management, payment processing, and notifications
-- **Court_Owner**: User who owns and manages sports courts on the platform
+- **Court_Owner**: User who owns and manages sports courts on the platform. Has sub-states: unverified/verified, Stripe connected/not connected, trial/subscribed/expired
 - **Customer**: User who books and pays for court reservations
+- **Platform_Admin**: Administrative user with platform-wide privileges (user management, dispute escalation, platform promo codes, feature flags). Not self-registerable
 - **Court**: Sports facility (tennis court, padel court, basketball court, or 5x5 football court) available for booking
 - **Court_Type**: Category of court with specific attributes (duration, capacity, sport type)
 - **Court_Location_Type**: Attribute indicating if a court is in an open space (outdoor) or closed area (indoor)
@@ -758,37 +772,128 @@ graph TD
 - **Cancellation_Policy_Tier**: A time-based refund rule specifying a threshold (hours before booking) and corresponding refund percentage
 - **Trial_Period**: Free access period granted to new court owners for full platform features including manual booking management
 - **Notification_Urgency_Level**: Classification of notifications as CRITICAL (always immediate), STANDARD (respects quiet hours), or PROMOTIONAL (respects opt-out)
+- **Access_Token**: Short-lived JWT (15 minutes) containing user identity and role claims, validated independently by both services using a shared public key (RS256)
+- **Refresh_Token**: Long-lived token (30 days) stored server-side, used to obtain new access tokens without re-authentication. Rotated on each use with replay detection
+- **Authorization_Matrix**: Role-to-operation mapping that defines which actions each role (CUSTOMER, COURT_OWNER, PLATFORM_ADMIN) can perform
+- **Secure_Enclave**: Device-level secure storage (iOS Keychain / Android Keystore) used to store refresh tokens for biometric authentication
+- **Service_To_Service_Auth**: Authentication between Platform Service and Transaction Service — mTLS via Istio in staging/production, shared API key in dev/test
+- **OpenAPI_Specification**: Formal REST API contract (OpenAPI 3.1) defining endpoints, request/response schemas, authentication, and error responses for each service
+- **Contract_First_Development**: Development approach where API specifications are defined and agreed upon before implementation begins
+- **API_Code_Generation**: Automated generation of client SDKs (Dart for Flutter, TypeScript for React) from OpenAPI specification files
+- **Support_Ticket**: User-submitted issue report with category, description, attachments, and context metadata, tracked through a lifecycle (OPEN → IN_PROGRESS → RESOLVED → CLOSED)
+- **Diagnostic_Log**: Sanitized app logs (network requests, errors, navigation events) collected from the mobile device and attached to support tickets for debugging
+- **Support_Hub**: In-app and admin portal interface providing FAQ, ticket submission, and ticket tracking
 
 ## Requirements
 
-### Requirement 1: User Registration, Authentication, and Account Management
+### Requirement 1: User Registration, Authentication, Authorization, and Account Management
 
 **User Story:** As a new user, I want to register and authenticate using OAuth providers and biometrics, and manage my account including deletion, so that I can access the platform securely and maintain control over my personal data.
+
+#### Roles and Permissions
+
+The platform defines three roles with distinct permission boundaries:
+
+| Role | Description | Granted Via |
+|------|-------------|-------------|
+| **CUSTOMER** | Books courts, joins matches, manages personal bookings | Self-registration with role selection |
+| **COURT_OWNER** | Manages courts, availability, pricing, manual bookings, analytics | Self-registration with role selection + verification |
+| **PLATFORM_ADMIN** | Platform-wide operations: user management, dispute escalation, platform promo codes, feature flags, system configuration | Seeded in database or assigned by another PLATFORM_ADMIN — not self-registerable |
+
+**Court Owner Sub-States** (affect available operations within the COURT_OWNER role):
+- **Unverified**: Can set up courts (hidden from customers), access admin dashboard. Cannot have courts publicly visible.
+- **Verified**: Courts become publicly visible. Full admin features available.
+- **Stripe Not Connected**: Manual bookings work. Customer bookings blocked (courts not bookable by customers).
+- **Stripe Connected**: Full payment flow enabled.
+- **Trial Active**: Full feature access with trial banner.
+- **Trial Expired / No Subscription**: Read-only access to existing data. No new manual bookings.
+
+#### Authorization Matrix
+
+| Operation | CUSTOMER | COURT_OWNER | PLATFORM_ADMIN |
+|-----------|----------|-------------|----------------|
+| Register / Login | ✓ | ✓ | ✓ |
+| Book a court | ✓ | ✗ | ✗ |
+| Join open match | ✓ | ✗ | ✗ |
+| Create open match | ✓ | ✗ | ✗ |
+| Join waitlist | ✓ | ✗ | ✗ |
+| View/manage own bookings | ✓ | ✗ | ✗ |
+| Rate/review courts | ✓ | ✗ | ✗ |
+| Manage favorites/preferences | ✓ | ✗ | ✗ |
+| Create/edit/remove courts | ✗ | ✓ (own courts) | ✗ |
+| Configure availability/pricing | ✗ | ✓ (own courts) | ✗ |
+| Create manual bookings | ✗ | ✓ (own courts, active subscription) | ✗ |
+| Confirm/reject pending bookings | ✗ | ✓ (own courts) | ✗ |
+| View analytics/revenue | ✗ | ✓ (own courts) | ✓ (platform-wide) |
+| Create court-level promo codes | ✗ | ✓ (own courts) | ✗ |
+| Create platform-wide promo codes | ✗ | ✗ | ✓ |
+| Manage feature flags | ✗ | ✗ | ✓ |
+| Manage users (suspend/unsuspend) | ✗ | ✗ | ✓ |
+| Handle escalated disputes | ✗ | ✗ | ✓ |
+| View system health/observability | ✗ | ✗ | ✓ |
+| Configure platform settings | ✗ | ✗ | ✓ |
+| Submit support tickets | ✓ | ✓ | ✗ |
+| View own support tickets | ✓ | ✓ | ✗ |
+| Manage all support tickets | ✗ | ✗ | ✓ |
+
+#### JWT Token Structure
+
+WHEN authentication is complete, THE Platform_Service SHALL issue a JWT access token containing the following claims:
+- `sub`: User ID (UUID)
+- `role`: One of `CUSTOMER`, `COURT_OWNER`, `PLATFORM_ADMIN`
+- `email`: User's email address
+- `verified`: Boolean — court owner verification status (only for COURT_OWNER)
+- `stripeConnected`: Boolean — Stripe Connect onboarding status (only for COURT_OWNER)
+- `subscriptionStatus`: One of `TRIAL`, `ACTIVE`, `EXPIRED`, `NONE` (only for COURT_OWNER)
+- `iat`: Issued at timestamp
+- `exp`: Expiration timestamp
+
+#### Token Lifecycle
+
+- **Access token lifetime**: 15 minutes (short-lived, stateless validation)
+- **Refresh token lifetime**: 30 days (stored server-side, rotated on each use)
+- **Refresh token rotation**: Each refresh request issues a new refresh token and invalidates the previous one. If a previously-invalidated refresh token is used (replay detection), ALL refresh tokens for that user are revoked, forcing re-authentication.
+- **Token refresh endpoint**: `POST /api/auth/refresh` — accepts refresh token, returns new access + refresh token pair
+- **Logout**: Revokes all refresh tokens for the user's current device
+
+#### Biometric Authentication
+
+WHEN a mobile user enables biometric authentication, THE Platform_Service SHALL issue a long-lived refresh token that is stored in the device's secure enclave (iOS Keychain / Android Keystore) — not the user's actual credentials. Biometric unlock (fingerprint/face ID) gates access to this stored refresh token, which is then exchanged for a new access token via the standard refresh flow.
+
+#### Service-to-Service Authentication
+
+Internal HTTP calls between Platform Service and Transaction Service (within the Kubernetes cluster) SHALL use one of the following mechanisms:
+- **With Istio (staging/production)**: Mutual TLS (mTLS) via Istio sidecar proxies provides automatic service identity verification. No additional auth headers needed.
+- **Without Istio (dev/test)**: A shared internal API key passed via `X-Internal-Api-Key` header, rotated via the secrets management pipeline. Internal endpoints are not exposed through NGINX Ingress.
 
 #### Acceptance Criteria
 
 1. WHEN a user initiates registration, THE Platform_Service SHALL offer OAuth registration options (Google, Facebook, Apple ID)
-2. WHEN a user registers via OAuth, THE Platform_Service SHALL create a new user profile with provider information and selected role (court owner or customer)
+2. WHEN a user registers via OAuth, THE Platform_Service SHALL create a new user profile with provider information and selected role (CUSTOMER or COURT_OWNER)
 3. WHEN registration is initiated, THE Platform_Service SHALL present terms and conditions that must be accepted before account creation
 4. WHEN terms and conditions are not accepted, THE Platform_Service SHALL prevent account creation and registration completion
 5. WHEN a user selects OAuth login, THE Platform_Service SHALL redirect to the selected provider (Google, Facebook, Apple ID)
 6. WHEN OAuth authentication succeeds, THE Platform_Service SHALL create or update the user profile with provider information
-7. WHEN authentication is complete, THE Platform_Service SHALL issue a JWT token with appropriate role-based permissions
-8. WHEN a JWT token expires, THE Platform_Service SHALL require re-authentication before allowing protected operations
+7. WHEN authentication is complete, THE Platform_Service SHALL issue a JWT access token (15-minute lifetime) and a refresh token (30-day lifetime, stored server-side) with role-based claims as defined in the JWT Token Structure above
+8. WHEN a JWT access token expires, THE client SHALL use the refresh token to obtain a new access token without requiring the user to re-authenticate. WHEN the refresh token is also expired or revoked, THE Platform_Service SHALL require full re-authentication
 9. WHERE a user has multiple OAuth providers linked, THE Platform_Service SHALL allow login through any linked provider
-10. WHEN a mobile user enables biometric authentication, THE Platform_Service SHALL store encrypted credentials for biometric login
+10. WHEN a mobile user enables biometric authentication, THE Platform_Service SHALL issue a refresh token stored in the device's secure enclave (iOS Keychain / Android Keystore), gated by biometric unlock — not the user's actual credentials
 11. WHEN a returning mobile user opens the app, THE Platform_Service SHALL offer biometric authentication (fingerprint or face recognition) as a login option
-12. WHEN biometric authentication succeeds, THE Platform_Service SHALL authenticate the user without requiring OAuth flow
+12. WHEN biometric authentication succeeds, THE Platform_Service SHALL use the stored refresh token to obtain a new access token without requiring OAuth flow
 13. WHEN a user requests account deletion, THE Platform_Service SHALL process the request in compliance with GDPR right to be forgotten
 14. WHEN account deletion is requested, THE Platform_Service SHALL cancel all future bookings, process refunds, and anonymize personal data
 15. WHEN a court owner requests account deletion, THE Platform_Service SHALL validate that all future bookings are resolved before allowing deletion
 16. WHEN account deletion is processed, THE Platform_Service SHALL anonymize the user's personal data in historical records (bookings, reviews, payments) while preserving the records themselves for analytics and audit trail integrity
 17. WHEN a court owner's account is deleted, THE Platform_Service SHALL retain anonymized court and revenue data for platform analytics and reassign or archive courts as appropriate
-18. THE Platform_Service SHALL limit concurrent active sessions to a configurable maximum (default: 5 devices)
-19. WHEN the concurrent session limit is exceeded, THE Platform_Service SHALL invalidate the oldest session
+18. THE Platform_Service SHALL limit concurrent active sessions to a configurable maximum (default: 5 devices) tracked via refresh tokens
+19. WHEN the concurrent session limit is exceeded, THE Platform_Service SHALL invalidate the oldest session's refresh token
 20. THE Platform_Service SHALL implement rate limiting on authentication endpoints to prevent brute force attacks
 21. WHEN an OAuth provider becomes unavailable, THE Platform_Service SHALL allow users to link an alternative provider for account recovery
 22. THE Platform_Service SHALL support user profile updates including name, email, phone number, and notification preferences
+23. THE PLATFORM_ADMIN role SHALL NOT be self-registerable. Platform admin accounts are seeded in the database or created by an existing PLATFORM_ADMIN
+24. WHEN any API request is received, THE Platform_Service and Transaction_Service SHALL validate the JWT access token, extract the role claim, and enforce the authorization matrix before processing the request
+25. WHEN a COURT_OWNER attempts an operation requiring active subscription (e.g., manual booking creation), THE Platform_Service SHALL check the `subscriptionStatus` claim and reject the request if expired
+26. WHEN a COURT_OWNER's courts are accessed for customer booking, THE Transaction_Service SHALL verify `stripeConnected` status and reject customer bookings if Stripe Connect is not active
 
 ### Requirement 2: Court Registration and Management with Type Configuration
 
@@ -1070,7 +1175,7 @@ graph TD
 
 ### Requirement 16: System Observability and Monitoring
 
-**User Story:** As a system administrator, I want comprehensive monitoring and tracing, so that I can maintain system health and performance.
+**User Story:** As a platform administrator (PLATFORM_ADMIN), I want comprehensive monitoring and tracing, so that I can maintain system health and performance.
 
 #### Acceptance Criteria
 
@@ -1082,7 +1187,7 @@ graph TD
 
 ### Requirement 17: Centralized Logging and Alerting
 
-**User Story:** As a system administrator, I want centralized logging with indexing and alerting capabilities, so that I can quickly identify and respond to system issues.
+**User Story:** As a platform administrator (PLATFORM_ADMIN), I want centralized logging with indexing and alerting capabilities, so that I can quickly identify and respond to system issues.
 
 #### Acceptance Criteria
 
@@ -1280,7 +1385,7 @@ graph TD
 1. THE Platform_Service SHALL implement a feature flag system for enabling/disabling advertisements globally
 2. WHEN the advertisement feature flag is disabled (default), THE system SHALL not display any advertisements or make calls to ad providers
 3. WHEN the advertisement feature flag is enabled, THE system SHALL activate advertisement functionality across all client applications
-4. THE feature flag configuration SHALL be manageable through environment variables or configuration files without code deployment
+4. THE feature flag configuration SHALL be manageable by PLATFORM_ADMIN users through the admin API or environment variables without code deployment
 5. THE Platform_Service SHALL support per-environment feature flag configuration (e.g., ads disabled in dev/test, enabled in production)
 
 **Advertisement Integration Architecture:**
@@ -1396,7 +1501,7 @@ graph TD
 2. THE Platform_Service SHALL allow court owners to set promo code validity periods, usage limits, and applicable court types
 3. WHEN a customer applies a promo code during booking, THE Transaction_Service SHALL validate the code and apply the discount to the booking amount
 4. WHEN a promo code is invalid or expired, THE Transaction_Service SHALL display a clear error message and allow the customer to proceed without discount
-5. THE Platform_Service SHALL allow the platform administrator to create platform-wide promotional codes (e.g., first-booking discount, referral codes)
+5. THE Platform_Service SHALL allow users with the PLATFORM_ADMIN role to create platform-wide promotional codes (e.g., first-booking discount, referral codes)
 6. THE Platform_Service SHALL track promo code usage and provide analytics to court owners
 
 **Dynamic Pricing:**
@@ -1422,3 +1527,110 @@ graph TD
 7. WHEN court owners enter court descriptions and amenities, THE Platform_Service SHALL support multi-language content entry
 8. WHEN a court description is not available in the customer's preferred language, THE Platform_Service SHALL fall back to the court owner's primary language and display a "translated content not available" indicator
 9. THE admin web application SHALL support the same languages as the mobile application
+
+### Requirement 29: API Contracts (OpenAPI Specifications)
+
+**User Story:** As a developer working on frontend or backend components, I want formal API contracts defined as OpenAPI specifications, so that frontend and backend teams can develop independently with clear interface agreements and detect breaking changes early.
+
+#### API Contract Files
+
+The following OpenAPI 3.1 specification files define the complete REST API contracts between client applications and backend services:
+
+- **Platform Service API**: `#[[file:openapi-platform-service.yaml]]` — Authentication, users, courts, availability, weather, favorites, ratings, analytics, promo codes, pricing, feature flags, Stripe Connect, support tickets, and platform admin operations.
+- **Transaction Service API**: `#[[file:openapi-transaction-service.yaml]]` — Bookings, payments, notifications, waitlist, open matches, split payments, and Stripe webhooks. Also documents WebSocket event schemas and Kafka event schemas for async contracts.
+
+#### Acceptance Criteria
+
+**Contract-First Development:**
+1. THE Platform_Service and Transaction_Service SHALL implement their REST APIs conforming to the OpenAPI specifications defined in the contract files above
+2. WHEN a new API endpoint is needed, THE specification file SHALL be updated first and reviewed before implementation begins
+3. THE OpenAPI specifications SHALL serve as the single source of truth for request/response schemas, path parameters, query parameters, and error responses
+4. THE OpenAPI specifications SHALL define all authentication requirements per endpoint (public vs. Bearer JWT)
+5. THE OpenAPI specifications SHALL define role-based access requirements per endpoint consistent with the authorization matrix in Requirement 1
+
+**Code Generation and Validation:**
+6. THE backend services SHALL use springdoc-openapi to auto-generate OpenAPI documentation from annotated controllers and validate that implementations match the contract
+7. THE Flutter mobile application SHALL use openapi-generator to generate Dart API client code from the specification files
+8. THE React admin web application SHALL use openapi-generator to generate TypeScript API client code from the specification files
+9. WHEN API implementations deviate from the specification, THE CI/CD pipeline SHALL fail the build with a clear diff of contract violations
+
+**Contract Testing Integration:**
+10. THE QA framework's contract tests (Requirement 21, criteria 24-26) SHALL validate API compatibility against these OpenAPI specifications
+11. WHEN a service changes its API, THE contract tests SHALL detect breaking changes in CI before deployment
+12. THE contract tests SHALL cover both synchronous HTTP APIs (defined in OpenAPI specs) and asynchronous Kafka event schemas (documented in the Transaction Service spec)
+
+**Versioning and Evolution:**
+13. THE OpenAPI specifications SHALL use semantic versioning (major.minor.patch) to track API evolution
+14. WHEN breaking changes are introduced, THE specification version SHALL increment the major version and THE services SHALL support the previous major version for a deprecation period (minimum 30 days)
+15. THE OpenAPI specifications SHALL be stored in the respective service repositories alongside the service code and included in CI validation
+
+**WebSocket and Async Contracts:**
+16. THE Transaction Service OpenAPI specification SHALL document WebSocket event schemas (server→client and client→server message formats) as informational sections
+17. THE Transaction Service OpenAPI specification SHALL document Kafka event schemas (topic names, partition keys, and message formats) as informational sections for cross-service async contracts
+
+### Requirement 30: Customer Support System
+
+**User Story:** As a user experiencing an issue with a booking, payment, or the app itself, I want an easy way to contact support and share relevant context (including app logs), so that my problem can be diagnosed and resolved quickly.
+
+#### Support Access Points
+
+Support is accessible from both the mobile app and the admin web portal:
+
+- **Mobile App**: "Help & Support" section in the user profile/settings menu, plus contextual "Report a Problem" buttons on booking detail screens and payment error screens
+- **Admin Web Portal**: "Support" section in the sidebar navigation, plus contextual "Report Issue" buttons on booking management and payout screens
+- **Both**: A floating help icon (?) on key screens that opens the support hub
+
+#### Support Hub Features
+
+The support hub provides a tiered approach — self-service first, then escalation:
+
+1. **FAQ / Help Center** (static content, no backend call): Searchable FAQ articles covering common topics (booking, payments, cancellations, account). Content managed as static JSON/Markdown files bundled with the app and admin portal, updated via app releases. Future: migrate to a headless CMS if content volume grows.
+
+2. **Support Ticket Submission** (primary support channel): Structured form that collects issue details and sends them to the platform team.
+
+3. **Diagnostic Log Collection** (mobile only): Automatic collection of recent app logs to attach to support tickets for faster debugging.
+
+#### Acceptance Criteria
+
+**Support Ticket Submission:**
+1. WHEN a user opens the support hub, THE system SHALL display a "Submit a Support Ticket" option prominently
+2. WHEN a user submits a support ticket, THE Platform_Service SHALL accept the ticket with: subject, category (BOOKING, PAYMENT, ACCOUNT, TECHNICAL, OTHER), description (free text), and optional attachments (screenshots, max 5 images, max 5MB each)
+3. WHEN a support ticket is submitted from a booking detail screen, THE system SHALL auto-attach the booking ID, court name, date/time, and payment status as context metadata
+4. WHEN a support ticket is submitted from a payment error screen, THE system SHALL auto-attach the payment ID, error code, and Stripe transaction reference as context metadata
+5. WHEN a support ticket is created, THE Platform_Service SHALL assign a unique ticket reference number (e.g., `FB-20260207-001`) and return it to the user
+6. WHEN a support ticket is created, THE Platform_Service SHALL send a confirmation email to the user with the ticket reference and expected response time
+7. THE Platform_Service SHALL store support tickets with: ticket ID, user ID, user role, category, subject, description, attachments, context metadata, status, timestamps, and assigned admin (if any)
+8. WHEN a user views their support tickets, THE Platform_Service SHALL return a list of their tickets with current status (OPEN, IN_PROGRESS, AWAITING_USER, RESOLVED, CLOSED)
+9. WHEN a support ticket status changes, THE Transaction_Service SHALL send a notification to the user (push + email)
+10. THE Platform_Service SHALL allow users to add follow-up messages to an existing open ticket (threaded conversation)
+11. THE Platform_Service SHALL allow users to close/resolve their own tickets with an optional satisfaction rating (1-5 stars)
+
+**Diagnostic Log Collection (Mobile App):**
+12. WHEN a user submits a support ticket from the mobile app, THE mobile application SHALL offer an "Attach App Logs" toggle (default: on)
+13. WHEN log attachment is enabled, THE mobile application SHALL collect the last 24 hours of local app logs (network requests with status codes, navigation events, error stack traces, app version, device model, OS version) and upload them as a compressed file attached to the ticket
+14. THE mobile application SHALL strip all sensitive data from logs before upload: no JWT tokens, no payment card details, no passwords. Only request URLs, HTTP status codes, timestamps, and error messages are included
+15. THE mobile application SHALL maintain a rolling log buffer (max 5MB) stored locally on the device using a lightweight logging framework (e.g., `logger` package for Flutter)
+16. WHEN the log buffer exceeds 5MB, THE mobile application SHALL discard the oldest entries automatically
+17. THE mobile application SHALL display a clear privacy notice explaining what data is collected when the user enables log attachment
+
+**Platform Admin Support Management:**
+18. THE Platform_Service SHALL provide PLATFORM_ADMIN users with a support ticket dashboard showing all tickets across all users
+19. THE support ticket dashboard SHALL support filtering by: status, category, user role, date range, and assigned admin
+20. THE Platform_Service SHALL allow PLATFORM_ADMIN users to assign tickets to themselves or other admins
+21. THE Platform_Service SHALL allow PLATFORM_ADMIN users to respond to tickets (responses are sent to the user via email and visible in the ticket thread)
+22. THE Platform_Service SHALL allow PLATFORM_ADMIN users to change ticket status and add internal notes (not visible to the user)
+23. THE Platform_Service SHALL allow PLATFORM_ADMIN users to view the user's recent activity (last 10 bookings, last 5 payments) from the ticket detail view for faster diagnosis
+24. THE Platform_Service SHALL track support metrics: average response time, average resolution time, tickets by category, satisfaction ratings
+
+**Court Owner Support:**
+25. WHEN a court owner submits a support ticket, THE Platform_Service SHALL include their Stripe Connect status, subscription status, and verification status as automatic context metadata
+26. THE Platform_Service SHALL provide court owners with a dedicated "Payout Issues" ticket category that auto-attaches recent payout history
+
+**Email Fallback:**
+27. WHEN the in-app support ticket system is unavailable (e.g., app crash preventing navigation), THE system SHALL provide a support email address (support@fieldbooking.gr) displayed on the login screen and in the app store listing
+28. WHEN support emails are received, THE platform team SHALL manually create tickets in the system (future: integrate with SendGrid inbound parse for automatic ticket creation from emails)
+
+**FAQ / Help Center:**
+29. THE mobile application and admin web portal SHALL include a searchable FAQ section with articles organized by category (Booking, Payments, Account, Technical)
+30. THE FAQ content SHALL be available in both Greek and English, consistent with the app's language setting
+31. THE FAQ articles SHALL be bundled as static content with the application and updated via app releases

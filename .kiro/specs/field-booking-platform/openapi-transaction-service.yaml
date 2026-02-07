@@ -1,0 +1,1897 @@
+openapi: 3.1.0
+info:
+  title: Field Booking Transaction Service API
+  description: |
+    REST API contract for the Transaction Service. Handles bookings, payments, notifications,
+    waitlists, open matches, and split payments.
+    
+    Base path: All endpoints are prefixed and routed via NGINX Ingress.
+    Authentication: Bearer JWT access token (RS256) unless marked as public.
+    Currency: EUR
+    Languages: el (Greek), en (English)
+    
+    WebSocket: Real-time updates available at /ws/* (see WebSocket Events section).
+  version: 1.0.0
+  contact:
+    name: Field Booking Platform Team
+
+servers:
+  - url: https://api.fieldbooking.gr
+    description: Production
+  - url: https://staging-api.fieldbooking.gr
+    description: Staging
+  - url: http://localhost:8081
+    description: Local development
+
+tags:
+  - name: Bookings
+    description: Booking creation, management, and history
+  - name: Manual Bookings
+    description: Court owner manual booking creation
+  - name: Recurring Bookings
+    description: Recurring booking management
+  - name: Payments
+    description: Payment processing and receipts
+  - name: Notifications
+    description: Device registration and notification management
+  - name: Waitlist
+    description: Waitlist queue management
+  - name: Open Matches
+    description: Player matchmaking and open match management
+  - name: Split Payments
+    description: Split payment between players
+  - name: Webhooks
+    description: Stripe webhook handlers (server-to-server)
+
+security:
+  - BearerAuth: []
+
+paths:
+
+  # ─── Bookings ───────────────────────────────────────────────────────────────
+  /api/bookings:
+    post:
+      tags: [Bookings]
+      summary: Create a booking
+      description: |
+        Creates a new booking with atomic conflict prevention. Acquires optimistic lock on time slot,
+        processes payment, and confirms or sets to PENDING based on court confirmation mode.
+        CUSTOMER role only.
+      operationId: createBooking
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBookingRequest'
+      responses:
+        '201':
+          description: Booking created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Booking'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '402':
+          description: Payment failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Time slot conflict — already booked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Booking constraints violated (advance window, minimum notice, court not bookable)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    get:
+      tags: [Bookings]
+      summary: List bookings for current user
+      description: |
+        CUSTOMER: returns own bookings. COURT_OWNER: returns bookings for owned courts
+        (both customer and manual bookings in unified view).
+      operationId: listBookings
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [CONFIRMED, PENDING_CONFIRMATION, CANCELLED, COMPLETED]
+        - name: fromDate
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: toDate
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: fieldId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: courtType
+          in: query
+          schema:
+            $ref: '#/components/schemas/CourtType'
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: size
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: Booking list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingListResponse'
+
+  /api/bookings/{bookingId}:
+    get:
+      tags: [Bookings]
+      summary: Get booking details
+      description: Returns full booking details including court info, payment status, and audit trail.
+      operationId: getBookingDetails
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      responses:
+        '200':
+          description: Booking details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingDetail'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/bookings/{bookingId}/modify:
+    put:
+      tags: [Bookings]
+      summary: Modify a booking
+      description: |
+        Changes booking time slot. Validates new slot availability, adjusts payment if pricing differs.
+        Processed atomically.
+      operationId: modifyBooking
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModifyBookingRequest'
+      responses:
+        '200':
+          description: Booking modified
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Booking'
+        '409':
+          description: New time slot conflict
+        '422':
+          description: Modification not allowed (policy, timing)
+
+  /api/bookings/{bookingId}/cancel:
+    post:
+      tags: [Bookings]
+      summary: Cancel a booking
+      description: |
+        Cancels a booking. Refund amount determined by cancellation policy.
+        Court owner cancellation always triggers full refund.
+      operationId: cancelBooking
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+      responses:
+        '200':
+          description: Booking cancelled with refund details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CancellationResult'
+
+  /api/bookings/{bookingId}/confirm:
+    post:
+      tags: [Bookings]
+      summary: Confirm a pending booking
+      description: Court owner confirms a PENDING_CONFIRMATION booking. Captures payment. COURT_OWNER only.
+      operationId: confirmBooking
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      responses:
+        '200':
+          description: Booking confirmed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Booking'
+        '400':
+          description: Booking not in PENDING_CONFIRMATION status
+
+  /api/bookings/{bookingId}/reject:
+    post:
+      tags: [Bookings]
+      summary: Reject a pending booking
+      description: Court owner rejects a PENDING_CONFIRMATION booking. Full refund issued. COURT_OWNER only.
+      operationId: rejectBooking
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+      responses:
+        '200':
+          description: Booking rejected and refund initiated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CancellationResult'
+
+  /api/bookings/pending:
+    get:
+      tags: [Bookings]
+      summary: List pending bookings for court owner
+      description: Returns bookings awaiting confirmation for the court owner's courts. COURT_OWNER only.
+      operationId: listPendingBookings
+      parameters:
+        - name: fieldId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: size
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: Pending bookings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingListResponse'
+
+  # ─── Manual Bookings ────────────────────────────────────────────────────────
+  /api/bookings/manual:
+    post:
+      tags: [Manual Bookings]
+      summary: Create manual booking
+      description: |
+        Court owner creates a booking without payment processing (walk-in, phone reservation).
+        Same conflict prevention as customer bookings. Requires active subscription.
+        COURT_OWNER only.
+      operationId: createManualBooking
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateManualBookingRequest'
+      responses:
+        '201':
+          description: Manual booking created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Booking'
+        '403':
+          description: Subscription expired or inactive
+        '409':
+          description: Time slot conflict
+
+  # ─── Recurring Bookings ─────────────────────────────────────────────────────
+  /api/bookings/recurring:
+    post:
+      tags: [Recurring Bookings]
+      summary: Create recurring booking
+      description: |
+        Creates weekly recurring bookings for up to 12 weeks. Validates availability for all dates.
+        Each instance is charged separately. Partial creation allowed if some dates conflict.
+      operationId: createRecurringBooking
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRecurringBookingRequest'
+      responses:
+        '201':
+          description: Recurring booking created (may include conflicts)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecurringBookingResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/bookings/recurring/{recurringGroupId}:
+    get:
+      tags: [Recurring Bookings]
+      summary: Get recurring booking group
+      description: Returns all instances in a recurring booking group.
+      operationId: getRecurringBookingGroup
+      parameters:
+        - name: recurringGroupId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Recurring booking instances
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecurringBookingGroup'
+
+  /api/bookings/{bookingId}/receipt:
+    get:
+      tags: [Bookings]
+      summary: Get booking receipt
+      description: Returns digital receipt with booking details, payment amount, and transaction ID.
+      operationId: getBookingReceipt
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      responses:
+        '200':
+          description: Digital receipt
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Receipt'
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+
+
+  # ─── Payments ───────────────────────────────────────────────────────────────
+  /api/payments/methods:
+    get:
+      tags: [Payments]
+      summary: List saved payment methods
+      description: Returns customer's saved payment methods from Stripe.
+      operationId: listPaymentMethods
+      responses:
+        '200':
+          description: Payment methods
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  methods:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PaymentMethod'
+    post:
+      tags: [Payments]
+      summary: Add payment method
+      description: Attaches a new payment method (card, Apple Pay, Google Pay) via Stripe setup intent.
+      operationId: addPaymentMethod
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [setupIntentId]
+              properties:
+                setupIntentId:
+                  type: string
+                  description: Stripe SetupIntent ID from client-side confirmation
+      responses:
+        '201':
+          description: Payment method added
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentMethod'
+
+  /api/payments/setup-intent:
+    post:
+      tags: [Payments]
+      summary: Create Stripe setup intent
+      description: Creates a Stripe SetupIntent for adding a new payment method on the client side.
+      operationId: createSetupIntent
+      responses:
+        '200':
+          description: Setup intent created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  clientSecret:
+                    type: string
+                    description: Stripe client secret for frontend SDK
+
+  /api/payments/{paymentId}/refund:
+    get:
+      tags: [Payments]
+      summary: Get refund status
+      description: Returns the status of a refund for a specific payment.
+      operationId: getRefundStatus
+      parameters:
+        - name: paymentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Refund status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RefundStatus'
+
+  /api/payments/{paymentId}/dispute:
+    get:
+      tags: [Payments]
+      summary: Get dispute details
+      description: Returns dispute/chargeback details for a payment.
+      operationId: getDisputeDetails
+      parameters:
+        - name: paymentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Dispute details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DisputeDetail'
+
+  # ─── Notifications ──────────────────────────────────────────────────────────
+  /api/notifications/device:
+    post:
+      tags: [Notifications]
+      summary: Register device for push notifications
+      description: Registers an FCM device token for the authenticated user. Supports multiple devices.
+      operationId: registerDevice
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceToken, platform]
+              properties:
+                deviceToken:
+                  type: string
+                  description: FCM registration token
+                platform:
+                  type: string
+                  enum: [IOS, ANDROID, WEB]
+                deviceId:
+                  type: string
+                  description: Unique device identifier for token management
+      responses:
+        '201':
+          description: Device registered
+    delete:
+      tags: [Notifications]
+      summary: Unregister device
+      description: Removes device token on logout or uninstall.
+      operationId: unregisterDevice
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceToken]
+              properties:
+                deviceToken:
+                  type: string
+      responses:
+        '204':
+          description: Device unregistered
+
+  /api/notifications:
+    get:
+      tags: [Notifications]
+      summary: List notifications
+      description: Returns paginated notification history for the authenticated user.
+      operationId: listNotifications
+      parameters:
+        - name: unreadOnly
+          in: query
+          schema:
+            type: boolean
+            default: false
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: size
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: Notifications
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationListResponse'
+
+  /api/notifications/{notificationId}/read:
+    post:
+      tags: [Notifications]
+      summary: Mark notification as read
+      operationId: markNotificationRead
+      parameters:
+        - name: notificationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Marked as read
+
+  /api/notifications/read-all:
+    post:
+      tags: [Notifications]
+      summary: Mark all notifications as read
+      operationId: markAllNotificationsRead
+      responses:
+        '204':
+          description: All marked as read
+
+
+  # ─── Waitlist ───────────────────────────────────────────────────────────────
+  /api/waitlist:
+    post:
+      tags: [Waitlist]
+      summary: Join waitlist
+      description: |
+        Adds customer to waitlist for a fully booked time slot. FIFO order, no priority overrides.
+        Max 5 concurrent waitlist entries per customer. CUSTOMER role only.
+      operationId: joinWaitlist
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JoinWaitlistRequest'
+      responses:
+        '201':
+          description: Added to waitlist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WaitlistEntry'
+        '400':
+          description: Slot not fully booked or waitlist disabled for this court
+        '409':
+          description: Already on waitlist for this slot
+        '422':
+          description: Maximum concurrent waitlist entries reached (5)
+    get:
+      tags: [Waitlist]
+      summary: List active waitlist entries
+      description: Returns the customer's active waitlist entries.
+      operationId: listWaitlistEntries
+      responses:
+        '200':
+          description: Waitlist entries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entries:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/WaitlistEntry'
+
+  /api/waitlist/{waitlistEntryId}:
+    delete:
+      tags: [Waitlist]
+      summary: Leave waitlist
+      description: Removes customer from a waitlist.
+      operationId: leaveWaitlist
+      parameters:
+        - name: waitlistEntryId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Removed from waitlist
+
+  /api/waitlist/{waitlistEntryId}/confirm:
+    post:
+      tags: [Waitlist]
+      summary: Confirm waitlist slot
+      description: |
+        When notified of availability, customer confirms within the hold period (default 15 min).
+        Triggers normal booking and payment flow.
+      operationId: confirmWaitlistSlot
+      parameters:
+        - name: waitlistEntryId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [paymentMethodId]
+              properties:
+                paymentMethodId:
+                  type: string
+                  description: Stripe payment method ID
+      responses:
+        '201':
+          description: Booking created from waitlist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Booking'
+        '410':
+          description: Hold period expired — slot moved to next in queue
+
+  # ─── Open Matches ──────────────────────────────────────────────────────────
+  /api/matches:
+    get:
+      tags: [Open Matches]
+      summary: Search open matches
+      description: Returns open matches filtered by sport type, skill level, location, and date.
+      operationId: searchOpenMatches
+      parameters:
+        - name: courtType
+          in: query
+          schema:
+            $ref: '#/components/schemas/CourtType'
+        - name: skillLevel
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 7
+        - name: latitude
+          in: query
+          schema:
+            type: number
+            format: double
+        - name: longitude
+          in: query
+          schema:
+            type: number
+            format: double
+        - name: radiusKm
+          in: query
+          schema:
+            type: number
+            format: double
+        - name: date
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: size
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: Open matches
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenMatchListResponse'
+
+  /api/matches/{matchId}:
+    get:
+      tags: [Open Matches]
+      summary: Get open match details
+      description: Returns full match details including players, skill levels, and court info.
+      operationId: getOpenMatchDetails
+      parameters:
+        - $ref: '#/components/parameters/MatchId'
+      responses:
+        '200':
+          description: Match details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenMatchDetail'
+
+  /api/matches/{matchId}/join:
+    post:
+      tags: [Open Matches]
+      summary: Request to join an open match
+      description: |
+        Sends join request. If auto-accept is enabled and player is within skill range,
+        automatically approved. Otherwise, match creator has 4 hours to respond.
+      operationId: joinOpenMatch
+      parameters:
+        - $ref: '#/components/parameters/MatchId'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                paymentMethodId:
+                  type: string
+                  description: Payment method for the player's share
+                message:
+                  type: string
+                  description: Optional message to match creator
+      responses:
+        '200':
+          description: Join request sent (or auto-accepted)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JoinRequestResult'
+        '400':
+          description: Match is full or player already joined
+        '422':
+          description: Skill level outside match range
+
+  /api/matches/{matchId}/join-requests:
+    get:
+      tags: [Open Matches]
+      summary: List join requests for a match
+      description: Returns pending join requests. Match creator only.
+      operationId: listJoinRequests
+      parameters:
+        - $ref: '#/components/parameters/MatchId'
+      responses:
+        '200':
+          description: Join requests
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  requests:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/JoinRequest'
+
+  /api/matches/{matchId}/join-requests/{requestId}/approve:
+    post:
+      tags: [Open Matches]
+      summary: Approve join request
+      description: Match creator approves a player's join request. Triggers payment for their share.
+      operationId: approveJoinRequest
+      parameters:
+        - $ref: '#/components/parameters/MatchId'
+        - name: requestId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Player added to match
+
+  /api/matches/{matchId}/join-requests/{requestId}/decline:
+    post:
+      tags: [Open Matches]
+      summary: Decline join request
+      operationId: declineJoinRequest
+      parameters:
+        - $ref: '#/components/parameters/MatchId'
+        - name: requestId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Request declined
+
+  /api/matches/{matchId}/leave:
+    post:
+      tags: [Open Matches]
+      summary: Leave an open match
+      description: Player leaves before booking time. Match reopens for new players. Payment adjusted.
+      operationId: leaveOpenMatch
+      parameters:
+        - $ref: '#/components/parameters/MatchId'
+      responses:
+        '200':
+          description: Left match, payment adjustment processed
+
+  /api/matches/{matchId}/messages:
+    get:
+      tags: [Open Matches]
+      summary: Get match chat messages
+      description: In-app messaging between players in the same match.
+      operationId: getMatchMessages
+      parameters:
+        - $ref: '#/components/parameters/MatchId'
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: size
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: Messages
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MatchMessageListResponse'
+    post:
+      tags: [Open Matches]
+      summary: Send message in match chat
+      operationId: sendMatchMessage
+      parameters:
+        - $ref: '#/components/parameters/MatchId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message:
+                  type: string
+                  maxLength: 500
+      responses:
+        '201':
+          description: Message sent
+
+
+  # ─── Split Payments ─────────────────────────────────────────────────────────
+  /api/split-payments:
+    post:
+      tags: [Split Payments]
+      summary: Initiate split payment
+      description: |
+        Booking creator initiates split payment. Full amount held from creator.
+        Invited players receive payment links. Min share: €1.00.
+      operationId: initiateSplitPayment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InitiateSplitPaymentRequest'
+      responses:
+        '201':
+          description: Split payment initiated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SplitPayment'
+
+  /api/split-payments/{splitPaymentId}:
+    get:
+      tags: [Split Payments]
+      summary: Get split payment details
+      description: Returns split payment status, shares, and payment status per player.
+      operationId: getSplitPaymentDetails
+      parameters:
+        - name: splitPaymentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Split payment details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SplitPaymentDetail'
+
+  /api/split-payments/{splitPaymentId}/pay:
+    post:
+      tags: [Split Payments]
+      summary: Pay split payment share
+      description: Co-player pays their share. Releases corresponding amount from creator's hold.
+      operationId: paySplitShare
+      parameters:
+        - name: splitPaymentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [paymentMethodId]
+              properties:
+                paymentMethodId:
+                  type: string
+      responses:
+        '200':
+          description: Share paid
+        '402':
+          description: Payment failed
+        '410':
+          description: Payment deadline expired
+
+  # ─── Webhooks (Server-to-Server) ────────────────────────────────────────────
+  /api/webhooks/stripe:
+    post:
+      tags: [Webhooks]
+      summary: Stripe webhook handler
+      description: |
+        Handles Stripe webhook events. Idempotent processing with retry logic.
+        Events: payment_intent.succeeded, payment_intent.payment_failed,
+        charge.dispute.created, account.updated (Stripe Connect).
+        Secured via Stripe webhook signature verification.
+      security: []
+      operationId: handleStripeWebhook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Stripe webhook event payload
+      responses:
+        '200':
+          description: Webhook processed
+        '400':
+          description: Invalid webhook signature
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# WebSocket Events (informational — not REST endpoints)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Connection: wss://api.fieldbooking.gr/ws?token={accessToken}
+# Authentication: JWT access token passed as query parameter
+#
+# Server → Client Events:
+#   AVAILABILITY_UPDATE:
+#     { type: "AVAILABILITY_UPDATE", fieldId, date, slots: [...] }
+#   BOOKING_STATUS_CHANGE:
+#     { type: "BOOKING_STATUS_CHANGE", bookingId, status, message }
+#   NOTIFICATION:
+#     { type: "NOTIFICATION", notification: { id, title, body, urgency, data } }
+#   MATCH_UPDATE:
+#     { type: "MATCH_UPDATE", matchId, event: "PLAYER_JOINED"|"PLAYER_LEFT"|"MATCH_FULL"|"MESSAGE" }
+#   WAITLIST_SLOT_AVAILABLE:
+#     { type: "WAITLIST_SLOT_AVAILABLE", waitlistEntryId, fieldId, date, startTime, holdExpiresAt }
+#
+# Client → Server Events:
+#   SUBSCRIBE_COURT:
+#     { type: "SUBSCRIBE_COURT", fieldId }
+#   UNSUBSCRIBE_COURT:
+#     { type: "UNSUBSCRIBE_COURT", fieldId }
+#   SUBSCRIBE_MATCH:
+#     { type: "SUBSCRIBE_MATCH", matchId }
+#   PING:
+#     { type: "PING" }
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Kafka Event Schemas (informational — async contracts)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Topic: booking-events (partitioned by fieldId)
+#   BookingCreated:
+#     { eventType: "BOOKING_CREATED", bookingId, fieldId, userId, date, startTime, endTime, status, timestamp }
+#   BookingConfirmed:
+#     { eventType: "BOOKING_CONFIRMED", bookingId, fieldId, timestamp }
+#   BookingCancelled:
+#     { eventType: "BOOKING_CANCELLED", bookingId, fieldId, cancelledBy, refundAmount, timestamp }
+#   BookingModified:
+#     { eventType: "BOOKING_MODIFIED", bookingId, fieldId, oldDate, oldStartTime, newDate, newStartTime, timestamp }
+#
+# Topic: notification-events (partitioned by userId)
+#   NotificationEvent:
+#     { eventType: "NOTIFICATION", userId, title, body, urgency: "CRITICAL"|"STANDARD"|"PROMOTIONAL", channel: "PUSH"|"EMAIL"|"IN_APP", data: {...}, timestamp }
+#
+# Topic: analytics-events (partitioned by fieldId)
+#   AnalyticsEvent:
+#     { eventType: "BOOKING_ANALYTICS"|"REVENUE_ANALYTICS", fieldId, data: {...}, timestamp }
+#
+# Topic: court-updates (partitioned by fieldId) — Platform Service → Transaction Service
+#   CourtUpdated:
+#     { eventType: "COURT_UPDATED"|"PRICING_UPDATED"|"AVAILABILITY_UPDATED", fieldId, data: {...}, timestamp }
+#
+# Topic: match-events (partitioned by matchId) — Transaction Service → Platform Service
+#   MatchEvent:
+#     { eventType: "MATCH_CREATED"|"MATCH_UPDATED"|"MATCH_CLOSED", matchId, fieldId, data: {...}, timestamp }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Components
+# ═══════════════════════════════════════════════════════════════════════════════
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: RS256 JWT access token. See Platform Service Requirement 1 for claims structure.
+
+  parameters:
+    BookingId:
+      name: bookingId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Booking unique identifier
+    MatchId:
+      name: matchId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Open match unique identifier
+
+  responses:
+    BadRequest:
+      description: Invalid request parameters
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Missing or invalid authentication
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Forbidden:
+      description: Insufficient permissions
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  schemas:
+    # ─── Enums ──────────────────────────────────────────────────────────────
+    CourtType:
+      type: string
+      enum: [TENNIS, PADEL, BASKETBALL, FOOTBALL_5X5]
+
+    BookingStatus:
+      type: string
+      enum: [CONFIRMED, PENDING_CONFIRMATION, CANCELLED, COMPLETED, MODIFIED]
+
+    PaymentStatus:
+      type: string
+      enum: [AUTHORIZED, CAPTURED, REFUNDED, PARTIALLY_REFUNDED, FAILED, DISPUTED]
+
+    # ─── Bookings ───────────────────────────────────────────────────────────
+    CreateBookingRequest:
+      type: object
+      required: [fieldId, date, startTime, paymentMethodId]
+      properties:
+        fieldId:
+          type: string
+          format: uuid
+        date:
+          type: string
+          format: date
+        startTime:
+          type: string
+          format: time
+        durationMinutes:
+          type: integer
+          description: Override court default duration (optional)
+        numberOfPeople:
+          type: integer
+          minimum: 1
+          description: Must not exceed court max capacity
+        paymentMethodId:
+          type: string
+          description: Stripe payment method ID
+        promoCode:
+          type: string
+          nullable: true
+        openMatch:
+          type: boolean
+          default: false
+          description: Make this booking an open match
+        openMatchConfig:
+          $ref: '#/components/schemas/OpenMatchConfig'
+        splitPayment:
+          type: boolean
+          default: false
+        splitPaymentConfig:
+          $ref: '#/components/schemas/SplitPaymentConfig'
+
+    OpenMatchConfig:
+      type: object
+      description: Configuration when openMatch is true
+      properties:
+        skillRangeMin:
+          type: integer
+          minimum: 1
+          maximum: 7
+        skillRangeMax:
+          type: integer
+          minimum: 1
+          maximum: 7
+        autoAccept:
+          type: boolean
+          default: false
+          description: Auto-accept players within skill range
+
+    SplitPaymentConfig:
+      type: object
+      description: Configuration when splitPayment is true
+      properties:
+        invitees:
+          type: array
+          items:
+            type: object
+            properties:
+              identifier:
+                type: string
+                description: Username or email of invited player
+              customAmount:
+                type: number
+                format: decimal
+                nullable: true
+                description: Custom share amount (min €1.00). Null = equal split
+
+    Booking:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        fieldId:
+          type: string
+          format: uuid
+        courtName:
+          type: string
+        courtType:
+          $ref: '#/components/schemas/CourtType'
+        customerId:
+          type: string
+          format: uuid
+        date:
+          type: string
+          format: date
+        startTime:
+          type: string
+          format: time
+        endTime:
+          type: string
+          format: time
+        durationMinutes:
+          type: integer
+        numberOfPeople:
+          type: integer
+        status:
+          $ref: '#/components/schemas/BookingStatus'
+        confirmationMode:
+          type: string
+          enum: [INSTANT, MANUAL]
+        amount:
+          type: number
+          format: decimal
+        currency:
+          type: string
+          default: EUR
+        paymentStatus:
+          $ref: '#/components/schemas/PaymentStatus'
+        isManual:
+          type: boolean
+        isRecurring:
+          type: boolean
+        recurringGroupId:
+          type: string
+          format: uuid
+          nullable: true
+        hasOpenMatch:
+          type: boolean
+        hasSplitPayment:
+          type: boolean
+        timezone:
+          type: string
+          description: Court's timezone (e.g., Europe/Athens)
+        createdAt:
+          type: string
+          format: date-time
+
+    BookingDetail:
+      allOf:
+        - $ref: '#/components/schemas/Booking'
+        - type: object
+          properties:
+            courtAddress:
+              type: string
+            courtLocationType:
+              type: string
+              enum: [INDOOR, OUTDOOR]
+            ownerName:
+              type: string
+            paymentId:
+              type: string
+              format: uuid
+            promoCodeApplied:
+              type: string
+              nullable: true
+            discountAmount:
+              type: number
+              format: decimal
+              nullable: true
+            platformFee:
+              type: number
+              format: decimal
+            cancellationPolicy:
+              type: array
+              items:
+                type: object
+                properties:
+                  thresholdHours:
+                    type: integer
+                  refundPercentage:
+                    type: integer
+            auditTrail:
+              type: array
+              items:
+                $ref: '#/components/schemas/AuditEntry'
+
+    AuditEntry:
+      type: object
+      properties:
+        action:
+          type: string
+          description: e.g., CREATED, CONFIRMED, CANCELLED, MODIFIED, REFUNDED
+        performedBy:
+          type: string
+          description: User ID or "SYSTEM"
+        timestamp:
+          type: string
+          format: date-time
+        details:
+          type: string
+          nullable: true
+
+    BookingListResponse:
+      type: object
+      properties:
+        bookings:
+          type: array
+          items:
+            $ref: '#/components/schemas/Booking'
+        totalElements:
+          type: integer
+        page:
+          type: integer
+        size:
+          type: integer
+
+    ModifyBookingRequest:
+      type: object
+      required: [newDate, newStartTime]
+      properties:
+        newDate:
+          type: string
+          format: date
+        newStartTime:
+          type: string
+          format: time
+
+    CancellationResult:
+      type: object
+      properties:
+        bookingId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [CANCELLED]
+        refundAmount:
+          type: number
+          format: decimal
+        refundPercentage:
+          type: integer
+        platformFeeRetained:
+          type: number
+          format: decimal
+        refundStatus:
+          type: string
+          enum: [INITIATED, PROCESSING, COMPLETED, NONE]
+
+    CreateManualBookingRequest:
+      type: object
+      required: [fieldId, date, startTime]
+      properties:
+        fieldId:
+          type: string
+          format: uuid
+        date:
+          type: string
+          format: date
+        startTime:
+          type: string
+          format: time
+        durationMinutes:
+          type: integer
+        customerName:
+          type: string
+          nullable: true
+        customerPhone:
+          type: string
+          nullable: true
+        customerEmail:
+          type: string
+          format: email
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+
+    # ─── Recurring Bookings ─────────────────────────────────────────────────
+    CreateRecurringBookingRequest:
+      type: object
+      required: [fieldId, startDate, startTime, paymentMethodId, weeks]
+      properties:
+        fieldId:
+          type: string
+          format: uuid
+        startDate:
+          type: string
+          format: date
+          description: First booking date (must be a specific day of week)
+        startTime:
+          type: string
+          format: time
+        paymentMethodId:
+          type: string
+        weeks:
+          type: integer
+          minimum: 2
+          maximum: 12
+          description: Number of weekly repetitions
+        numberOfPeople:
+          type: integer
+          minimum: 1
+        promoCode:
+          type: string
+          nullable: true
+
+    RecurringBookingResult:
+      type: object
+      properties:
+        recurringGroupId:
+          type: string
+          format: uuid
+        createdBookings:
+          type: array
+          items:
+            $ref: '#/components/schemas/Booking'
+        conflictingDates:
+          type: array
+          items:
+            type: string
+            format: date
+          description: Dates that could not be booked due to conflicts
+        totalCreated:
+          type: integer
+        totalConflicts:
+          type: integer
+
+    RecurringBookingGroup:
+      type: object
+      properties:
+        recurringGroupId:
+          type: string
+          format: uuid
+        instances:
+          type: array
+          items:
+            $ref: '#/components/schemas/Booking'
+        totalInstances:
+          type: integer
+
+    # ─── Payments ───────────────────────────────────────────────────────────
+    PaymentMethod:
+      type: object
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          enum: [CARD, APPLE_PAY, GOOGLE_PAY]
+        last4:
+          type: string
+          nullable: true
+        brand:
+          type: string
+          nullable: true
+          description: e.g., visa, mastercard
+        expiryMonth:
+          type: integer
+          nullable: true
+        expiryYear:
+          type: integer
+          nullable: true
+        isDefault:
+          type: boolean
+
+    Receipt:
+      type: object
+      properties:
+        bookingId:
+          type: string
+          format: uuid
+        transactionId:
+          type: string
+        courtName:
+          type: string
+        date:
+          type: string
+          format: date
+        startTime:
+          type: string
+          format: time
+        endTime:
+          type: string
+          format: time
+        amount:
+          type: number
+          format: decimal
+        platformFee:
+          type: number
+          format: decimal
+        discount:
+          type: number
+          format: decimal
+          nullable: true
+        totalCharged:
+          type: number
+          format: decimal
+        currency:
+          type: string
+          default: EUR
+        paymentMethod:
+          type: string
+          description: e.g., "Visa ending in 4242"
+        issuedAt:
+          type: string
+          format: date-time
+
+    RefundStatus:
+      type: object
+      properties:
+        paymentId:
+          type: string
+          format: uuid
+        refundAmount:
+          type: number
+          format: decimal
+        status:
+          type: string
+          enum: [INITIATED, PROCESSING, COMPLETED, FAILED]
+        initiatedAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    DisputeDetail:
+      type: object
+      properties:
+        paymentId:
+          type: string
+          format: uuid
+        bookingId:
+          type: string
+          format: uuid
+        amount:
+          type: number
+          format: decimal
+        reason:
+          type: string
+        status:
+          type: string
+          enum: [OPEN, UNDER_REVIEW, WON, LOST]
+        createdAt:
+          type: string
+          format: date-time
+
+    # ─── Notifications ──────────────────────────────────────────────────────
+    Notification:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        body:
+          type: string
+        urgency:
+          type: string
+          enum: [CRITICAL, STANDARD, PROMOTIONAL]
+        read:
+          type: boolean
+        data:
+          type: object
+          description: Additional context (bookingId, fieldId, etc.)
+        createdAt:
+          type: string
+          format: date-time
+
+    NotificationListResponse:
+      type: object
+      properties:
+        notifications:
+          type: array
+          items:
+            $ref: '#/components/schemas/Notification'
+        unreadCount:
+          type: integer
+        totalElements:
+          type: integer
+        page:
+          type: integer
+        size:
+          type: integer
+
+    # ─── Waitlist ───────────────────────────────────────────────────────────
+    JoinWaitlistRequest:
+      type: object
+      required: [fieldId, date, startTime]
+      properties:
+        fieldId:
+          type: string
+          format: uuid
+        date:
+          type: string
+          format: date
+        startTime:
+          type: string
+          format: time
+
+    WaitlistEntry:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        fieldId:
+          type: string
+          format: uuid
+        courtName:
+          type: string
+        date:
+          type: string
+          format: date
+        startTime:
+          type: string
+          format: time
+        position:
+          type: integer
+          description: Queue position (1 = next in line)
+        status:
+          type: string
+          enum: [WAITING, SLOT_OFFERED, EXPIRED, CONVERTED]
+        holdExpiresAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Set when slot is offered (15-min hold)
+        createdAt:
+          type: string
+          format: date-time
+
+    # ─── Open Matches ───────────────────────────────────────────────────────
+    OpenMatchDetail:
+      type: object
+      properties:
+        matchId:
+          type: string
+          format: uuid
+        bookingId:
+          type: string
+          format: uuid
+        fieldId:
+          type: string
+          format: uuid
+        courtName:
+          type: string
+        courtType:
+          $ref: '#/components/schemas/CourtType'
+        date:
+          type: string
+          format: date
+        startTime:
+          type: string
+          format: time
+        endTime:
+          type: string
+          format: time
+        creator:
+          $ref: '#/components/schemas/MatchPlayer'
+        players:
+          type: array
+          items:
+            $ref: '#/components/schemas/MatchPlayer'
+        currentPlayers:
+          type: integer
+        maxPlayers:
+          type: integer
+        costPerPlayer:
+          type: number
+          format: decimal
+        skillRangeMin:
+          type: integer
+        skillRangeMax:
+          type: integer
+        autoAccept:
+          type: boolean
+        status:
+          type: string
+          enum: [OPEN, FULL, CLOSED, COMPLETED]
+
+    MatchPlayer:
+      type: object
+      properties:
+        userId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        skillLevel:
+          type: integer
+        isCreator:
+          type: boolean
+
+    JoinRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        playerId:
+          type: string
+          format: uuid
+        playerName:
+          type: string
+        skillLevel:
+          type: integer
+        message:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [PENDING, APPROVED, DECLINED, EXPIRED]
+        expiresAt:
+          type: string
+          format: date-time
+          description: 4-hour timeout
+        createdAt:
+          type: string
+          format: date-time
+
+    JoinRequestResult:
+      type: object
+      properties:
+        requestId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [PENDING, AUTO_ACCEPTED]
+        message:
+          type: string
+
+    OpenMatchListResponse:
+      type: object
+      properties:
+        matches:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpenMatchDetail'
+        totalElements:
+          type: integer
+        page:
+          type: integer
+        size:
+          type: integer
+
+    MatchMessageListResponse:
+      type: object
+      properties:
+        messages:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                format: uuid
+              senderId:
+                type: string
+                format: uuid
+              senderName:
+                type: string
+              message:
+                type: string
+              sentAt:
+                type: string
+                format: date-time
+        totalElements:
+          type: integer
+        page:
+          type: integer
+        size:
+          type: integer
+
+    # ─── Split Payments ─────────────────────────────────────────────────────
+    InitiateSplitPaymentRequest:
+      type: object
+      required: [bookingId, invitees]
+      properties:
+        bookingId:
+          type: string
+          format: uuid
+        invitees:
+          type: array
+          items:
+            type: object
+            required: [identifier]
+            properties:
+              identifier:
+                type: string
+                description: Username or email
+              customAmount:
+                type: number
+                format: decimal
+                nullable: true
+                description: Custom share (min €1.00). Null = equal split
+
+    SplitPayment:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        bookingId:
+          type: string
+          format: uuid
+        totalAmount:
+          type: number
+          format: decimal
+        shares:
+          type: array
+          items:
+            $ref: '#/components/schemas/SplitPaymentShare'
+        deadline:
+          type: string
+          format: date-time
+          description: 2 hours after match ends
+        status:
+          type: string
+          enum: [PENDING, PARTIALLY_PAID, FULLY_PAID, DEADLINE_ENFORCED]
+
+    SplitPaymentDetail:
+      allOf:
+        - $ref: '#/components/schemas/SplitPayment'
+        - type: object
+          properties:
+            creatorHoldAmount:
+              type: number
+              format: decimal
+            creatorHoldReleased:
+              type: number
+              format: decimal
+
+    SplitPaymentShare:
+      type: object
+      properties:
+        playerId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Null if invited but not yet registered
+        playerIdentifier:
+          type: string
+          description: Username or email
+        amount:
+          type: number
+          format: decimal
+        status:
+          type: string
+          enum: [PENDING, PAID, OVERDUE, WAIVED]
+        paidAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    # ─── Common ─────────────────────────────────────────────────────────────
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+          description: Human-readable message (localized)
+        details:
+          type: object
+          nullable: true
+        timestamp:
+          type: string
+          format: date-time
+        correlationId:
+          type: string
