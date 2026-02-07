@@ -1,8 +1,8 @@
-# Design Document: Field Booking Platform
+# Design Document: Court Booking Platform
 
 ## Overview
 
-The field booking platform implements a microservices architecture using Spring Boot services deployed on AWS ECS Fargate. The system provides real-time field booking capabilities with conflict prevention, integrated payment processing, and comprehensive observability. The architecture separates concerns between platform management (authentication, fields) and transactional operations (bookings, payments) while maintaining data consistency through event-driven patterns and optimistic locking.
+The court booking platform implements a microservices architecture using Spring Boot services deployed on AWS ECS Fargate. The system provides real-time court booking capabilities with conflict prevention, integrated payment processing, and comprehensive observability. The architecture separates concerns between platform management (authentication, fields) and transactional operations (bookings, payments) while maintaining data consistency through event-driven patterns and optimistic locking.
 
 Key design principles:
 - **Hybrid Sync/Async Architecture**: Synchronous operations for critical booking flows, asynchronous for notifications and analytics
@@ -135,7 +135,7 @@ public class AuthService {
 **Field Management Module:**
 ```java
 @RestController
-@RequestMapping("/api/fields")
+@RequestMapping("/api/courts")
 public class FieldController {
     @PostMapping
     public ResponseEntity<Field> createField(@RequestBody CreateFieldRequest request);
@@ -148,9 +148,9 @@ public class FieldController {
         @RequestParam(required = false) String fieldType
     );
     
-    @GetMapping("/{fieldId}/availability")
+    @GetMapping("/{courtId}/availability")
     public ResponseEntity<List<TimeSlot>> getAvailability(
-        @PathVariable Long fieldId,
+        @PathVariable Long courtId,
         @RequestParam LocalDate startDate,
         @RequestParam LocalDate endDate
     );
@@ -160,7 +160,7 @@ public class FieldController {
 public class FieldService {
     public Field createField(CreateFieldRequest request);
     public List<Field> findFieldsNearLocation(Double lat, Double lng, Double radius);
-    public List<TimeSlot> getFieldAvailability(Long fieldId, LocalDate start, LocalDate end);
+    public List<TimeSlot> getFieldAvailability(Long courtId, LocalDate start, LocalDate end);
 }
 ```
 
@@ -242,10 +242,10 @@ public class EventPublisher {
 ```java
 @Controller
 public class AvailabilityWebSocketController {
-    @MessageMapping("/field/{fieldId}/subscribe")
-    @SendTo("/topic/field/{fieldId}/availability")
-    public AvailabilityUpdate subscribeToFieldUpdates(@DestinationVariable Long fieldId) {
-        return availabilityService.getCurrentAvailability(fieldId);
+    @MessageMapping("/field/{courtId}/subscribe")
+    @SendTo("/topic/field/{courtId}/availability")
+    public AvailabilityUpdate subscribeToFieldUpdates(@DestinationVariable Long courtId) {
+        return availabilityService.getCurrentAvailability(courtId);
     }
 }
 
@@ -253,7 +253,7 @@ public class AvailabilityWebSocketController {
 public void handleBookingEvent(BookingCreatedEvent event) {
     AvailabilityUpdate update = createAvailabilityUpdate(event);
     messagingTemplate.convertAndSend(
-        "/topic/field/" + event.getFieldId() + "/availability", 
+        "/topic/field/" + event.getCourtId() + "/availability", 
         update
     );
 }
@@ -332,7 +332,7 @@ public class Booking {
     private Long id;
     
     @ManyToOne
-    @JoinColumn(name = "field_id")
+    @JoinColumn(name = "court_id")
     private Field field;
     
     @ManyToOne
@@ -374,7 +374,7 @@ public class AvailabilityWindow {
     private Long id;
     
     @ManyToOne
-    @JoinColumn(name = "field_id")
+    @JoinColumn(name = "court_id")
     private Field field;
     
     @Enumerated(EnumType.STRING)
@@ -397,7 +397,7 @@ public class AvailabilityWindow {
 ```java
 public class BookingCreatedEvent {
     private Long bookingId;
-    private Long fieldId;
+    private Long courtId;
     private Long customerId;
     private LocalDateTime startTime;
     private LocalDateTime endTime;
@@ -407,7 +407,7 @@ public class BookingCreatedEvent {
 
 public class BookingCancelledEvent {
     private Long bookingId;
-    private Long fieldId;
+    private Long courtId;
     private String reason;
     private LocalDateTime timestamp;
 }
@@ -438,13 +438,13 @@ public class NotificationEvent {
 CREATE INDEX idx_fields_location ON fields USING GIST (location);
 
 -- Booking time range queries
-CREATE INDEX idx_bookings_field_time ON bookings (field_id, start_time, end_time);
+CREATE INDEX idx_bookings_field_time ON bookings (court_id, start_time, end_time);
 
 -- User booking history
 CREATE INDEX idx_bookings_customer_created ON bookings (customer_id, created_at DESC);
 
 -- Availability window queries
-CREATE INDEX idx_availability_field_day ON availability_windows (field_id, day_of_week);
+CREATE INDEX idx_availability_field_day ON availability_windows (court_id, day_of_week);
 ```
 
 **Constraint Definitions:**
@@ -452,7 +452,7 @@ CREATE INDEX idx_availability_field_day ON availability_windows (field_id, day_o
 -- Prevent overlapping bookings for the same field
 ALTER TABLE bookings ADD CONSTRAINT no_overlapping_bookings 
 EXCLUDE USING gist (
-    field_id WITH =,
+    court_id WITH =,
     tsrange(start_time, end_time) WITH &&
 ) WHERE (status != 'CANCELLED');
 
@@ -735,18 +735,18 @@ The system requires both unit testing and property-based testing for comprehensi
 - **Java**: Use jqwik library for property-based testing
 - **Minimum 100 iterations** per property test due to randomization
 - Each property test must reference its design document property
-- Tag format: **Feature: field-booking-platform, Property {number}: {property_text}**
+- Tag format: **Feature: court-booking-platform, Property {number}: {property_text}**
 
 **Example Property Test Structure:**
 ```java
 @Property
-@Label("Feature: field-booking-platform, Property 11: Atomic Booking Creation with Conflict Prevention")
+@Label("Feature: court-booking-platform, Property 11: Atomic Booking Creation with Conflict Prevention")
 void atomicBookingCreationPreventsConflicts(
     @ForAll("validBookingRequests") CreateBookingRequest request1,
     @ForAll("validBookingRequests") CreateBookingRequest request2
 ) {
     // Arrange: Set up overlapping booking requests
-    request2.setFieldId(request1.getFieldId());
+    request2.setCourtId(request1.getCourtId());
     request2.setStartTime(request1.getStartTime());
     request2.setEndTime(request1.getEndTime());
     
@@ -774,7 +774,7 @@ void atomicBookingCreationPreventsConflicts(
 @Provide
 Arbitrary<CreateBookingRequest> validBookingRequests() {
     return Combinators.combine(
-        Arbitraries.longs().between(1L, 1000L), // fieldId
+        Arbitraries.longs().between(1L, 1000L), // courtId
         Arbitraries.localDateTimes().between(
             LocalDateTime.now().plusHours(1),
             LocalDateTime.now().plusDays(30)
@@ -783,9 +783,9 @@ Arbitrary<CreateBookingRequest> validBookingRequests() {
             BigDecimal.valueOf(10.00),
             BigDecimal.valueOf(200.00)
         ) // amount
-    ).as((fieldId, startTime, amount) -> {
+    ).as((courtId, startTime, amount) -> {
         CreateBookingRequest request = new CreateBookingRequest();
-        request.setFieldId(fieldId);
+        request.setCourtId(courtId);
         request.setStartTime(startTime);
         request.setEndTime(startTime.plusHours(1));
         request.setAmount(amount);

@@ -1,0 +1,31 @@
+# Component repositories (each has its own git repo)
+# Uncomment these if you want the root repo to ignore them
+# court-booking-platform-service/
+# court-booking-transaction-service/
+# court-booking-mobile-app/
+# court-booking-admin-web/
+# court-booking-qa/
+# court-booking-infrastructure/
+# court-booking-common/
+
+# IDE
+.idea/
+*.iml
+.vscode/*
+!.vscode/settings.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+postgres_data/
+
+# repos
+court-booking-platform-service/
+court-booking-transaction-service/
+court-booking-mobile-app/
+court-booking-admin-web/
+court-booking-qa/
+court-booking-infrastructure/
+court-booking-common/

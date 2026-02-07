@@ -1,6 +1,6 @@
 openapi: 3.1.0
 info:
-  title: Field Booking Transaction Service API
+  title: Court Booking Transaction Service API
   description: |
     REST API contract for the Transaction Service. Handles bookings, payments, notifications,
     waitlists, open matches, and split payments.
@@ -13,12 +13,12 @@ info:
     WebSocket: Real-time updates available at /ws/* (see WebSocket Events section).
   version: 1.0.0
   contact:
-    name: Field Booking Platform Team
+    name: Court Booking Platform Team
 
 servers:
-  - url: https://api.fieldbooking.gr
+  - url: https://api.courtbooking.gr
     description: Production
-  - url: https://staging-api.fieldbooking.gr
+  - url: https://staging-api.courtbooking.gr
     description: Staging
   - url: http://localhost:8081
     description: Local development
@@ -114,7 +114,7 @@ paths:
           schema:
             type: string
             format: date
-        - name: fieldId
+        - name: courtId
           in: query
           schema:
             type: string
@@ -262,7 +262,7 @@ paths:
       description: Returns bookings awaiting confirmation for the court owner's courts. COURT_OWNER only.
       operationId: listPendingBookings
       parameters:
-        - name: fieldId
+        - name: courtId
           in: query
           schema:
             type: string
@@ -1008,12 +1008,12 @@ paths:
 # ═══════════════════════════════════════════════════════════════════════════════
 # WebSocket Events (informational — not REST endpoints)
 # ═══════════════════════════════════════════════════════════════════════════════
-# Connection: wss://api.fieldbooking.gr/ws?token={accessToken}
+# Connection: wss://api.courtbooking.gr/ws?token={accessToken}
 # Authentication: JWT access token passed as query parameter
 #
 # Server → Client Events:
 #   AVAILABILITY_UPDATE:
-#     { type: "AVAILABILITY_UPDATE", fieldId, date, slots: [...] }
+#     { type: "AVAILABILITY_UPDATE", courtId, date, slots: [...] }
 #   BOOKING_STATUS_CHANGE:
 #     { type: "BOOKING_STATUS_CHANGE", bookingId, status, message }
 #   NOTIFICATION:
@@ -1021,13 +1021,13 @@ paths:
 #   MATCH_UPDATE:
 #     { type: "MATCH_UPDATE", matchId, event: "PLAYER_JOINED"|"PLAYER_LEFT"|"MATCH_FULL"|"MESSAGE" }
 #   WAITLIST_SLOT_AVAILABLE:
-#     { type: "WAITLIST_SLOT_AVAILABLE", waitlistEntryId, fieldId, date, startTime, holdExpiresAt }
+#     { type: "WAITLIST_SLOT_AVAILABLE", waitlistEntryId, courtId, date, startTime, holdExpiresAt }
 #
 # Client → Server Events:
 #   SUBSCRIBE_COURT:
-#     { type: "SUBSCRIBE_COURT", fieldId }
+#     { type: "SUBSCRIBE_COURT", courtId }
 #   UNSUBSCRIBE_COURT:
-#     { type: "UNSUBSCRIBE_COURT", fieldId }
+#     { type: "UNSUBSCRIBE_COURT", courtId }
 #   SUBSCRIBE_MATCH:
 #     { type: "SUBSCRIBE_MATCH", matchId }
 #   PING:
@@ -1036,31 +1036,31 @@ paths:
 # ═══════════════════════════════════════════════════════════════════════════════
 # Kafka Event Schemas (informational — async contracts)
 # ═══════════════════════════════════════════════════════════════════════════════
-# Topic: booking-events (partitioned by fieldId)
+# Topic: booking-events (partitioned by courtId)
 #   BookingCreated:
-#     { eventType: "BOOKING_CREATED", bookingId, fieldId, userId, date, startTime, endTime, status, timestamp }
+#     { eventType: "BOOKING_CREATED", bookingId, courtId, userId, date, startTime, endTime, status, timestamp }
 #   BookingConfirmed:
-#     { eventType: "BOOKING_CONFIRMED", bookingId, fieldId, timestamp }
+#     { eventType: "BOOKING_CONFIRMED", bookingId, courtId, timestamp }
 #   BookingCancelled:
-#     { eventType: "BOOKING_CANCELLED", bookingId, fieldId, cancelledBy, refundAmount, timestamp }
+#     { eventType: "BOOKING_CANCELLED", bookingId, courtId, cancelledBy, refundAmount, timestamp }
 #   BookingModified:
-#     { eventType: "BOOKING_MODIFIED", bookingId, fieldId, oldDate, oldStartTime, newDate, newStartTime, timestamp }
+#     { eventType: "BOOKING_MODIFIED", bookingId, courtId, oldDate, oldStartTime, newDate, newStartTime, timestamp }
 #
 # Topic: notification-events (partitioned by userId)
 #   NotificationEvent:
 #     { eventType: "NOTIFICATION", userId, title, body, urgency: "CRITICAL"|"STANDARD"|"PROMOTIONAL", channel: "PUSH"|"EMAIL"|"IN_APP", data: {...}, timestamp }
 #
-# Topic: analytics-events (partitioned by fieldId)
+# Topic: analytics-events (partitioned by courtId)
 #   AnalyticsEvent:
-#     { eventType: "BOOKING_ANALYTICS"|"REVENUE_ANALYTICS", fieldId, data: {...}, timestamp }
+#     { eventType: "BOOKING_ANALYTICS"|"REVENUE_ANALYTICS", courtId, data: {...}, timestamp }
 #
-# Topic: court-updates (partitioned by fieldId) — Platform Service → Transaction Service
+# Topic: court-updates (partitioned by courtId) — Platform Service → Transaction Service
 #   CourtUpdated:
-#     { eventType: "COURT_UPDATED"|"PRICING_UPDATED"|"AVAILABILITY_UPDATED", fieldId, data: {...}, timestamp }
+#     { eventType: "COURT_UPDATED"|"PRICING_UPDATED"|"AVAILABILITY_UPDATED", courtId, data: {...}, timestamp }
 #
 # Topic: match-events (partitioned by matchId) — Transaction Service → Platform Service
 #   MatchEvent:
-#     { eventType: "MATCH_CREATED"|"MATCH_UPDATED"|"MATCH_CLOSED", matchId, fieldId, data: {...}, timestamp }
+#     { eventType: "MATCH_CREATED"|"MATCH_UPDATED"|"MATCH_CLOSED", matchId, courtId, data: {...}, timestamp }
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1135,9 +1135,9 @@ components:
     # ─── Bookings ───────────────────────────────────────────────────────────
     CreateBookingRequest:
       type: object
-      required: [fieldId, date, startTime, paymentMethodId]
+      required: [courtId, date, startTime, paymentMethodId]
       properties:
-        fieldId:
+        courtId:
           type: string
           format: uuid
         date:
@@ -1212,7 +1212,7 @@ components:
         id:
           type: string
           format: uuid
-        fieldId:
+        courtId:
           type: string
           format: uuid
         courtName:
@@ -1370,9 +1370,9 @@ components:
 
     CreateManualBookingRequest:
       type: object
-      required: [fieldId, date, startTime]
+      required: [courtId, date, startTime]
       properties:
-        fieldId:
+        courtId:
           type: string
           format: uuid
         date:
@@ -1400,9 +1400,9 @@ components:
     # ─── Recurring Bookings ─────────────────────────────────────────────────
     CreateRecurringBookingRequest:
       type: object
-      required: [fieldId, startDate, startTime, paymentMethodId, weeks]
+      required: [courtId, startDate, startTime, paymentMethodId, weeks]
       properties:
-        fieldId:
+        courtId:
           type: string
           format: uuid
         startDate:
@@ -1586,7 +1586,7 @@ components:
           type: boolean
         data:
           type: object
-          description: Additional context (bookingId, fieldId, etc.)
+          description: Additional context (bookingId, courtId, etc.)
         createdAt:
           type: string
           format: date-time
@@ -1610,9 +1610,9 @@ components:
     # ─── Waitlist ───────────────────────────────────────────────────────────
     JoinWaitlistRequest:
       type: object
-      required: [fieldId, date, startTime]
+      required: [courtId, date, startTime]
       properties:
-        fieldId:
+        courtId:
           type: string
           format: uuid
         date:
@@ -1628,7 +1628,7 @@ components:
         id:
           type: string
           format: uuid
-        fieldId:
+        courtId:
           type: string
           format: uuid
         courtName:
@@ -1664,7 +1664,7 @@ components:
         bookingId:
           type: string
           format: uuid
-        fieldId:
+        courtId:
           type: string
           format: uuid
         courtName:

@@ -104,15 +104,15 @@ Domain entities should provide two construction paths (Buckpal pattern):
 ```java
 public class Booking {
     private final BookingId id;
-    private final FieldId fieldId;
+    private final CourtId courtId;
     private final UserId userId;
     private final DateRange dateRange;
     private BookingStatus status;
 
     // Creation — new booking, no ID yet
-    public Booking(FieldId fieldId, UserId userId, DateRange dateRange) {
+    public Booking(CourtId courtId, UserId userId, DateRange dateRange) {
         this.id = null;
-        this.fieldId = requireNonNull(fieldId);
+        this.courtId = requireNonNull(courtId);
         this.userId = requireNonNull(userId);
         this.dateRange = requireNonNull(dateRange);
         this.status = BookingStatus.PENDING;
@@ -120,9 +120,9 @@ public class Booking {
     }
 
     // Reconstitution — loading from database (used by persistence mapper)
-    public static Booking withId(BookingId id, FieldId fieldId, UserId userId,
+    public static Booking withId(BookingId id, CourtId courtId, UserId userId,
                                   DateRange dateRange, BookingStatus status) {
-        Booking booking = new Booking(fieldId, userId, dateRange);
+        Booking booking = new Booking(courtId, userId, dateRange);
         // Use reflection or package-private setter to assign id and status
         return booking;
     }
@@ -201,12 +201,12 @@ Commands validate their own inputs in the constructor. This keeps validation noi
 
 ```java
 public record CreateBookingCommand(
-    FieldId fieldId,
+    CourtId courtId,
     UserId userId,
     DateRange dateRange
 ) {
     public CreateBookingCommand {
-        requireNonNull(fieldId, "fieldId must not be null");
+        requireNonNull(courtId, "courtId must not be null");
         requireNonNull(userId, "userId must not be null");
         requireNonNull(dateRange, "dateRange must not be null");
     }
@@ -218,7 +218,7 @@ public record CreateBookingCommand(
 ```java
 public interface LoadBookingPort {
     Optional<Booking> loadById(BookingId id);
-    List<Booking> loadByFieldAndDateRange(FieldId fieldId, DateRange dateRange);
+    List<Booking> loadByFieldAndDateRange(CourtId courtId, DateRange dateRange);
 }
 
 public interface SaveBookingPort {
@@ -243,14 +243,14 @@ public class CreateBookingService implements CreateBookingUseCase {
     @Override
     public BookingId createBooking(CreateBookingCommand command) {
         List<Booking> conflicts = loadBookingPort
-            .loadByFieldAndDateRange(command.fieldId(), command.dateRange());
+            .loadByFieldAndDateRange(command.courtId(), command.dateRange());
 
         if (!conflicts.isEmpty()) {
-            throw new BookingConflictException("Field already booked for this time");
+            throw new BookingConflictException("Court already booked for this time");
         }
 
         Booking booking = new Booking(
-            command.fieldId(), command.userId(), command.dateRange()
+            command.courtId(), command.userId(), command.dateRange()
         );
 
         BookingId bookingId = saveBookingPort.save(booking);
@@ -267,12 +267,12 @@ For operations requiring concurrency control (like booking a time slot), acquire
 ```java
 @Override
 public BookingId createBooking(CreateBookingCommand command) {
-    timeSlotLock.lockSlot(command.fieldId(), command.dateRange());
+    timeSlotLock.lockSlot(command.courtId(), command.dateRange());
     try {
         // ... validate, create, persist
         return bookingId;
     } finally {
-        timeSlotLock.releaseSlot(command.fieldId(), command.dateRange());
+        timeSlotLock.releaseSlot(command.courtId(), command.dateRange());
     }
 }
 ```
@@ -294,7 +294,7 @@ public class BookingController {
     public ResponseEntity<BookingResponse> createBooking(
             @Valid @RequestBody CreateBookingRequest request) {
         CreateBookingCommand command = new CreateBookingCommand(
-            new FieldId(request.fieldId()),
+            new CourtId(request.courtId()),
             new UserId(request.userId()),
             new DateRange(request.startTime(), request.endTime())
         );
@@ -329,9 +329,9 @@ class BookingPersistenceAdapter implements LoadBookingPort, SaveBookingPort {
     }
 
     @Override
-    public List<Booking> loadByFieldAndDateRange(FieldId fieldId, DateRange dateRange) {
-        return repository.findByFieldIdAndDateRange(
-                fieldId.value(), dateRange.start(), dateRange.end())
+    public List<Booking> loadByFieldAndDateRange(CourtId courtId, DateRange dateRange) {
+        return repository.findByCourtIdAndDateRange(
+                courtId.value(), dateRange.start(), dateRange.end())
             .stream()
             .map(mapper::toDomain)
             .toList();
@@ -350,7 +350,7 @@ class BookingPersistenceAdapter implements LoadBookingPort, SaveBookingPort {
 ```java
 @Entity
 @Table(name = "bookings", indexes = {
-    @Index(name = "idx_field_date", columnList = "field_id,start_time,end_time"),
+    @Index(name = "idx_field_date", columnList = "court_id,start_time,end_time"),
     @Index(name = "idx_user", columnList = "user_id")
 })
 @Getter
@@ -362,8 +362,8 @@ public class BookingJpaEntity {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(name = "field_id", nullable = false)
-    private Long fieldId;
+    @Column(name = "court_id", nullable = false)
+    private Long courtId;
 
     @Column(name = "user_id", nullable = false)
     private Long userId;
@@ -467,7 +467,7 @@ public BookingResponse getBookingOrThrow(BookingId id) {
 ```java
 // API-level validation (adapter)
 public record CreateBookingRequest(
-    @NotNull @Positive Long fieldId,
+    @NotNull @Positive Long courtId,
     @NotNull @Positive Long userId,
     @NotNull @Future LocalDateTime startTime,
     @NotNull @Future LocalDateTime endTime
@@ -532,7 +532,7 @@ class BookingTest {
     void shouldRejectBookingInThePast() {
         LocalDateTime pastDate = LocalDateTime.now().minusDays(1);
         assertThatThrownBy(() -> new Booking(
-            new FieldId(1L), new UserId(1L),
+            new CourtId(1L), new UserId(1L),
             new DateRange(pastDate, pastDate.plusHours(1))
         )).isInstanceOf(IllegalArgumentException.class)
           .hasMessageContaining("past");
@@ -558,7 +558,7 @@ class BookingControllerTest {
         mockMvc.perform(post("/api/v1/bookings")
                 .contentType(APPLICATION_JSON)
                 .content("""
-                    {"fieldId":1,"userId":1,"startTime":"2026-03-01T10:00","endTime":"2026-03-01T11:30"}
+                    {"courtId":1,"userId":1,"startTime":"2026-03-01T10:00","endTime":"2026-03-01T11:30"}
                     """))
             .andExpect(status().isCreated())
             .andExpect(jsonPath("$.id").value(1));
@@ -776,7 +776,7 @@ public class GlobalExceptionHandler {
 ```yaml
 spring:
   application:
-    name: field-booking-service
+    name: court-booking-service
   profiles:
     active: ${SPRING_PROFILES_ACTIVE:local}
 
@@ -818,7 +818,7 @@ management:
 @Service
 public class CreateBookingService {
     public BookingId createBooking(CreateBookingCommand command) {
-        log.info("Creating booking for field={} user={}", command.fieldId(), command.userId());
+        log.info("Creating booking for court={} user={}", command.courtId(), command.userId());
         // ...
         log.debug("Booking created: {}", bookingId);
         return bookingId;
@@ -856,13 +856,13 @@ public class SecurityConfig {
 @RequiredArgsConstructor
 public class AvailabilityService {
 
-    @Cacheable(key = "#fieldId + '-' + #date")
-    public List<TimeSlot> getAvailability(Long fieldId, LocalDate date) {
-        return repository.findAvailableSlots(fieldId, date);
+    @Cacheable(key = "#courtId + '-' + #date")
+    public List<TimeSlot> getAvailability(Long courtId, LocalDate date) {
+        return repository.findAvailableSlots(courtId, date);
     }
 
-    @CacheEvict(key = "#fieldId + '-' + #date")
-    public void invalidateAvailability(Long fieldId, LocalDate date) {
+    @CacheEvict(key = "#courtId + '-' + #date")
+    public void invalidateAvailability(Long courtId, LocalDate date) {
         // Cache cleared on booking changes
     }
 }
@@ -944,7 +944,7 @@ The key is to take shortcuts **consciously** and document the trade-off, not acc
 
 ## 11. Reference Repository Catalog
 
-> The following GitHub repositories serve as state-of-the-art references for building production-grade Spring Boot 3.x / Java 21+ microservices. Each repository is selected for specific architectural patterns relevant to the field booking platform. When implementing, cross-reference the appropriate repository for the pattern you need.
+> The following GitHub repositories serve as state-of-the-art references for building production-grade Spring Boot 3.x / Java 21+ microservices. Each repository is selected for specific architectural patterns relevant to the court booking platform. When implementing, cross-reference the appropriate repository for the pattern you need.
 
 ### Tier 1: Primary Architecture References (Already Codified Above)
 
@@ -1041,11 +1041,11 @@ When implementing a specific feature, consult the appropriate reference:
 - Use `@Property` annotation with custom `@Provide` generators
 - Minimum 100 iterations per property test
 - Smart generators that constrain to valid input space
-- Tag format: `Feature: field-booking-platform, Property {N}: {description}`
+- Tag format: `Feature: court-booking-platform, Property {N}: {description}`
 
 ## 12. DigitalOcean-Specific Deployment Patterns
 
-> Since the field booking platform deploys to DigitalOcean (DOKS, Managed PostgreSQL, Managed Redis, Spaces), adapt cloud-specific patterns from the reference repositories accordingly.
+> Since the court booking platform deploys to DigitalOcean (DOKS, Managed PostgreSQL, Managed Redis, Spaces), adapt cloud-specific patterns from the reference repositories accordingly.
 
 ### Mapping AWS/GCP Patterns to DigitalOcean
 
@@ -1073,7 +1073,7 @@ When implementing a specific feature, consult the appropriate reference:
 # application-local.yml — Docker Compose infrastructure
 spring:
   datasource:
-    url: jdbc:postgresql://localhost:5432/fieldbooking
+    url: jdbc:postgresql://localhost:5432/courtbooking
   redis:
     host: localhost
   kafka:
@@ -1082,7 +1082,7 @@ spring:
 # application-dev.yml — DigitalOcean dev namespace
 spring:
   datasource:
-    url: jdbc:postgresql://${DO_PG_HOST}:${DO_PG_PORT}/fieldbooking_dev
+    url: jdbc:postgresql://${DO_PG_HOST}:${DO_PG_PORT}/courtbooking_dev
   redis:
     host: ${DO_REDIS_HOST}
   kafka:
@@ -1094,7 +1094,7 @@ spring:
 # application-prod.yml — DigitalOcean production cluster
 spring:
   datasource:
-    url: jdbc:postgresql://${DO_PG_HOST}:${DO_PG_PORT}/fieldbooking_prod
+    url: jdbc:postgresql://${DO_PG_HOST}:${DO_PG_PORT}/courtbooking_prod
     hikari:
       maximum-pool-size: 20
       minimum-idle: 5

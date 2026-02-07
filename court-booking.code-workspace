@@ -1,0 +1,47 @@
+{
+  "folders": [
+    {
+      "name": "📋 specs-and-docs",
+      "path": "."
+    },
+    {
+      "name": "🔧 platform-service",
+      "path": "court-booking-platform-service"
+    },
+    {
+      "name": "💳 transaction-service",
+      "path": "court-booking-transaction-service"
+    },
+    {
+      "name": "📱 mobile-app",
+      "path": "court-booking-mobile-app"
+    },
+    {
+      "name": "🖥️ admin-web",
+      "path": "court-booking-admin-web"
+    },
+    {
+      "name": "🧪 qa",
+      "path": "court-booking-qa"
+    },
+    {
+      "name": "🏗️ infrastructure",
+      "path": "court-booking-infrastructure"
+    },
+    {
+      "name": "📦 common",
+      "path": "court-booking-common"
+    }
+  ],
+  "settings": {
+    "files.exclude": {
+      "court-booking-platform-service": true,
+      "court-booking-transaction-service": true,
+      "court-booking-mobile-app": true,
+      "court-booking-admin-web": true,
+      "court-booking-qa": true,
+      "court-booking-infrastructure": true,
+      "court-booking-common": true
+    }
+  }
+}

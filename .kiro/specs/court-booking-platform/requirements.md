@@ -159,7 +159,7 @@ graph TB
 - **DOKS (Kubernetes)**: Managed Kubernetes cluster in Frankfurt (FRA1) region
 - **Production Cluster**: Dedicated cluster with 3x 8GB RAM droplets, auto-scaling (3-6 nodes) to accommodate application pods, Istio sidecars, and observability stack
 - **Dev/Test/Staging Cluster**: Shared cluster with namespace-based isolation, 2x 4GB RAM droplets with auto-scaling (2-4 nodes). Istio disabled in dev/test namespaces to conserve resources; enabled in staging namespace for pre-production validation
-- **NGINX Ingress Controller**: Path-based routing with defined rules (`/api/auth/*`, `/api/fields/*`, `/api/users/*`, `/api/weather/*` → Platform Service; `/api/bookings/*`, `/api/payments/*`, `/api/notifications/*`, `/api/waitlist/*`, `/api/matches/*` → Transaction Service), SSL termination, rate limiting
+- **NGINX Ingress Controller**: Path-based routing with defined rules (`/api/auth/*`, `/api/courts/*`, `/api/users/*`, `/api/weather/*` → Platform Service; `/api/bookings/*`, `/api/payments/*`, `/api/notifications/*`, `/api/waitlist/*`, `/api/matches/*` → Transaction Service), SSL termination, rate limiting
 
 **Data Storage**
 - **Managed PostgreSQL with PostGIS**: 2GB RAM instance with automatic backups and read replica for analytics queries
@@ -211,7 +211,7 @@ graph TB
 **Synchronous (REST APIs)**
 - Client applications → NGINX Ingress (path-based routing) → Platform Service or Transaction Service
 - **Routing Rules (NGINX Ingress):**
-  - `/api/auth/*`, `/api/users/*`, `/api/fields/*`, `/api/weather/*`, `/api/analytics/*`, `/api/promo-codes/*`, `/api/feature-flags/*`, `/api/admin/*`, `/api/support/*` → Platform Service
+  - `/api/auth/*`, `/api/users/*`, `/api/courts/*`, `/api/weather/*`, `/api/analytics/*`, `/api/promo-codes/*`, `/api/feature-flags/*`, `/api/admin/*`, `/api/support/*` → Platform Service
   - `/api/bookings/*`, `/api/payments/*`, `/api/notifications/*`, `/api/waitlist/*`, `/api/matches/*`, `/api/split-payments/*` → Transaction Service
   - `/ws/*` (WebSocket upgrade) → Transaction Service
 - **Auth token validation**: Both services validate JWT access tokens independently using a shared public key (RS256). NGINX Ingress performs initial token presence check; services perform full validation including signature verification, expiration check, and role-based authorization per the authorization matrix defined in Requirement 1. Token refresh is handled exclusively by Platform Service (`POST /api/auth/refresh`).
@@ -228,9 +228,9 @@ graph TB
 - Waitlist events: Transaction Service → Waitlist processor (cancellation triggers)
 - Open match events: Transaction Service → Platform Service (match status updates for map display)
 - **Partitioning Strategy:**
-  - `booking-events` topic: partitioned by `fieldId` to guarantee ordering per court (ensures availability updates are processed in sequence)
+  - `booking-events` topic: partitioned by `courtId` to guarantee ordering per court (ensures availability updates are processed in sequence)
   - `notification-events` topic: partitioned by `userId` to guarantee notification ordering per user
-  - `analytics-events` topic: partitioned by `fieldId` for court-level aggregation
+  - `analytics-events` topic: partitioned by `courtId` for court-level aggregation
 - **Latency Expectations**: Upstash Kafka operates over HTTPS, adding ~50-100ms latency per message compared to self-hosted. Availability updates should propagate to connected clients within 2 seconds of booking completion. If latency exceeds this threshold consistently, migrate to self-hosted Strimzi Kafka on Kubernetes.
 
 **Real-time (WebSocket - Managed by Transaction Service, backed by Redis Pub/Sub)**
@@ -269,7 +269,7 @@ services:
     image: postgis/postgis:15-3.3
     ports: ["5432:5432"]
     environment:
-      POSTGRES_DB: fieldbooking
+      POSTGRES_DB: courtbooking
       POSTGRES_USER: dev
       POSTGRES_PASSWORD: dev
     volumes:
@@ -313,14 +313,14 @@ services:
 The project uses a multi-repository architecture to enforce clear ownership boundaries and enable independent CI/CD pipelines:
 
 **Application Repositories (GitHub)**
-- **`field-booking-platform-service`**: Platform Service Spring Boot application (auth, users, courts, availability, analytics). Contains service code, unit tests, property-based tests (jqwik), Flyway migrations for the platform schema, and Dockerfile.
-- **`field-booking-transaction-service`**: Transaction Service Spring Boot application (bookings, payments, notifications, waitlist, open matches). Contains service code, unit tests, property-based tests (jqwik), Flyway migrations for the transaction schema, and Dockerfile.
-- **`field-booking-mobile-app`**: Flutter mobile application (iOS, Android, Web). Contains client code, widget tests, and integration tests.
-- **`field-booking-admin-web`**: React admin web application (court owner portal). Contains client code, unit tests, and Playwright UI tests.
-- **`field-booking-qa`**: QA test suite (pytest functional tests, Locust stress tests, contract tests). Independent from service repositories; tests APIs externally.
+- **`court-booking-platform-service`**: Platform Service Spring Boot application (auth, users, courts, availability, analytics). Contains service code, unit tests, property-based tests (jqwik), Flyway migrations for the platform schema, and Dockerfile.
+- **`court-booking-transaction-service`**: Transaction Service Spring Boot application (bookings, payments, notifications, waitlist, open matches). Contains service code, unit tests, property-based tests (jqwik), Flyway migrations for the transaction schema, and Dockerfile.
+- **`court-booking-mobile-app`**: Flutter mobile application (iOS, Android, Web). Contains client code, widget tests, and integration tests.
+- **`court-booking-admin-web`**: React admin web application (court owner portal). Contains client code, unit tests, and Playwright UI tests.
+- **`court-booking-qa`**: QA test suite (pytest functional tests, Locust stress tests, contract tests). Independent from service repositories; tests APIs externally.
 
 **Infrastructure Repository (GitHub)**
-- **`field-booking-infrastructure`**: All Terraform code for DigitalOcean resource provisioning, organized by environment:
+- **`court-booking-infrastructure`**: All Terraform code for DigitalOcean resource provisioning, organized by environment:
   - `modules/` — Reusable Terraform modules (DOKS cluster, managed PostgreSQL, managed Redis, Spaces, Load Balancer, VPC, DNS)
   - `environments/shared/` — Shared cluster configuration (dev/test/staging namespaces)
   - `environments/production/` — Production cluster configuration
@@ -329,7 +329,7 @@ The project uses a multi-repository architecture to enforce clear ownership boun
   - CI/CD: Terraform plan on PR, manual approval for apply. Separate GitHub Actions workflows per environment.
 
 **Shared Libraries (optional, as needed)**
-- **`field-booking-common`**: Shared Java library published to a private Maven repository (GitHub Packages). Contains shared DTOs, event schemas, exception types, and utility classes used by both services. Versioned independently with semantic versioning.
+- **`court-booking-common`**: Shared Java library published to a private Maven repository (GitHub Packages). Contains shared DTOs, event schemas, exception types, and utility classes used by both services. Versioned independently with semantic versioning.
 
 **Repository Conventions:**
 - Each application repository has its own GitHub Actions CI/CD pipeline
@@ -1627,7 +1627,7 @@ The support hub provides a tiered approach — self-service first, then escalati
 26. THE Platform_Service SHALL provide court owners with a dedicated "Payout Issues" ticket category that auto-attaches recent payout history
 
 **Email Fallback:**
-27. WHEN the in-app support ticket system is unavailable (e.g., app crash preventing navigation), THE system SHALL provide a support email address (support@fieldbooking.gr) displayed on the login screen and in the app store listing
+27. WHEN the in-app support ticket system is unavailable (e.g., app crash preventing navigation), THE system SHALL provide a support email address (support@courtbooking.gr) displayed on the login screen and in the app store listing
 28. WHEN support emails are received, THE platform team SHALL manually create tickets in the system (future: integrate with SendGrid inbound parse for automatic ticket creation from emails)
 
 **FAQ / Help Center:**

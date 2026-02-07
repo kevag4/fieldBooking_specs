@@ -4,7 +4,7 @@ inclusion: manual
 
 # Terraform DigitalOcean Infrastructure Context
 
-> When designing or implementing Terraform infrastructure code for the field-booking-platform on DigitalOcean, follow the patterns and standards in this document. It codifies best practices from antonbabenko's Terraform Best Practices, Gruntwork's infrastructure-modules pattern, terraform-aws-modules' module design, and DigitalOcean's official Terraform provider documentation.
+> When designing or implementing Terraform infrastructure code for the court-booking-platform on DigitalOcean, follow the patterns and standards in this document. It codifies best practices from antonbabenko's Terraform Best Practices, Gruntwork's infrastructure-modules pattern, terraform-aws-modules' module design, and DigitalOcean's official Terraform provider documentation.
 
 ## 1. Key Concepts & Hierarchy
 
@@ -32,10 +32,10 @@ composition (environment)
 
 ## 2. Repository Structure (Gruntwork Pattern)
 
-### Monorepo Layout for `field-booking-infrastructure`
+### Monorepo Layout for `court-booking-infrastructure`
 
 ```
-field-booking-infrastructure/
+court-booking-infrastructure/
 ├── modules/                              # Reusable resource modules
 │   ├── doks-cluster/                     # DOKS Kubernetes cluster
 │   │   ├── main.tf
@@ -209,7 +209,7 @@ resource "digitalocean_kubernetes_cluster" "shared" {
 | Rule | Example |
 |------|---------|
 | Use `-` (dash) in cloud resource names | `name = "fb-shared-cluster"` |
-| Include project prefix | `fb-` (field-booking) |
+| Include project prefix | `fb-` (court-booking) |
 | Include environment | `fb-prod-postgres` |
 | Include purpose | `fb-shared-worker-pool` |
 
@@ -349,7 +349,7 @@ variable "tags" {
 locals {
   default_tags = [
     "managed-by:terraform",
-    "project:field-booking",
+    "project:court-booking",
     "environment:${var.environment}"
   ]
   all_tags = distinct(concat(local.default_tags, var.tags))
@@ -735,7 +735,7 @@ resource "digitalocean_container_registry_docker_credentials" "this" {
 # environments/shared/main.tf
 locals {
   environment = "shared"
-  project     = "field-booking"
+  project     = "court-booking"
   region      = "fra1"
 }
 
@@ -816,7 +816,7 @@ module "redis" {
 # environments/production/main.tf
 locals {
   environment = "production"
-  project     = "field-booking"
+  project     = "court-booking"
   region      = "fra1"
 }
 
@@ -917,7 +917,7 @@ Never create DOKS cluster and deploy Kubernetes resources in the same module. Us
 
 # Stage 2: Kubernetes resources (separate apply or separate module)
 data "digitalocean_kubernetes_cluster" "this" {
-  name = "field-booking-production"
+  name = "court-booking-production"
 }
 
 provider "kubernetes" {
@@ -951,7 +951,7 @@ resource "kubernetes_namespace" "environments" {
     labels = {
       environment  = each.value
       managed_by   = "terraform"
-      project      = "field-booking"
+      project      = "court-booking"
       istio_inject = each.value == "staging" ? "enabled" : "disabled"
     }
   }
@@ -1252,7 +1252,7 @@ repos:
 | Validate code | `terraform fmt`, `terraform validate`, TFLint, pre-commit hooks |
 | Version pin providers | Use `~>` pessimistic constraint (e.g., `~> 2.75`) |
 | Version pin Terraform | Use `required_version = ">= 1.5.0"` |
-| Tag resources | Always include `managed-by:terraform`, `project:field-booking`, `environment:<env>` |
+| Tag resources | Always include `managed-by:terraform`, `project:court-booking`, `environment:<env>` |
 
 ## 14. DigitalOcean Resource Reference
 

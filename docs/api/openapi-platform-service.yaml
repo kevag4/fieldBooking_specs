@@ -1,6 +1,6 @@
 openapi: 3.1.0
 info:
-  title: Field Booking Platform Service API
+  title: Court Booking Platform Service API
   description: |
     REST API contract for the Platform Service. Handles authentication, user management,
     court management, discovery, weather, analytics, promo codes, feature flags, and admin operations.
@@ -11,12 +11,12 @@ info:
     Languages: el (Greek), en (English)
   version: 1.0.0
   contact:
-    name: Field Booking Platform Team
+    name: Court Booking Platform Team
 
 servers:
-  - url: https://api.fieldbooking.gr
+  - url: https://api.courtbooking.gr
     description: Production
-  - url: https://staging-api.fieldbooking.gr
+  - url: https://staging-api.courtbooking.gr
     description: Staging
   - url: http://localhost:8080
     description: Local development
@@ -310,7 +310,7 @@ paths:
 
 
   # ─── Courts ─────────────────────────────────────────────────────────────────
-  /api/fields:
+  /api/courts:
     get:
       tags: [Courts]
       summary: Search courts
@@ -426,14 +426,14 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
 
-  /api/fields/{fieldId}:
+  /api/courts/{courtId}:
     get:
       tags: [Courts]
       summary: Get court details
       description: Returns full court details including ratings, amenities, availability, cancellation policy, and weather (for outdoor courts).
       operationId: getCourtDetails
       parameters:
-        - $ref: '#/components/parameters/FieldId'
+        - $ref: '#/components/parameters/CourtId'
         - name: date
           in: query
           schema:
@@ -455,7 +455,7 @@ paths:
       description: Updates court information. Requires COURT_OWNER role and ownership of the court.
       operationId: updateCourt
       parameters:
-        - $ref: '#/components/parameters/FieldId'
+        - $ref: '#/components/parameters/CourtId'
       requestBody:
         required: true
         content:
@@ -481,7 +481,7 @@ paths:
       description: Deletes a court. Only allowed if no future confirmed bookings exist. Requires COURT_OWNER role.
       operationId: deleteCourt
       parameters:
-        - $ref: '#/components/parameters/FieldId'
+        - $ref: '#/components/parameters/CourtId'
       responses:
         '204':
           description: Court deleted
@@ -490,14 +490,14 @@ paths:
         '409':
           description: Court has future confirmed bookings
 
-  /api/fields/{fieldId}/images:
+  /api/courts/{courtId}/images:
     post:
       tags: [Courts]
       summary: Upload court images
       description: Uploads images to Spaces. Validates file format and size.
       operationId: uploadCourtImages
       parameters:
-        - $ref: '#/components/parameters/FieldId'
+        - $ref: '#/components/parameters/CourtId'
       requestBody:
         required: true
         content:
@@ -527,14 +527,14 @@ paths:
         '400':
           description: Invalid file format or size
 
-  /api/fields/{fieldId}/confirmation-mode:
+  /api/courts/{courtId}/confirmation-mode:
     put:
       tags: [Courts]
       summary: Set booking confirmation mode
       description: Sets court to "instant" or "manual" confirmation. Applies only to future bookings.
       operationId: setConfirmationMode
       parameters:
-        - $ref: '#/components/parameters/FieldId'
+        - $ref: '#/components/parameters/CourtId'
       requestBody:
         required: true
         content:
@@ -554,13 +554,13 @@ paths:
         '200':
           description: Confirmation mode updated
 
-  /api/fields/{fieldId}/waitlist-config:
+  /api/courts/{courtId}/waitlist-config:
     put:
       tags: [Courts]
       summary: Enable/disable waitlist for a court
       operationId: setWaitlistConfig
       parameters:
-        - $ref: '#/components/parameters/FieldId'
+        - $ref: '#/components/parameters/CourtId'
       requestBody:
         required: true
         content:
@@ -575,14 +575,14 @@ paths:
         '200':
           description: Waitlist config updated
 
-  /api/fields/{fieldId}/transfer:
+  /api/courts/{courtId}/transfer:
     post:
       tags: [Courts]
       summary: Transfer court ownership
       description: Transfers court to another verified court owner.
       operationId: transferCourtOwnership
       parameters:
-        - $ref: '#/components/parameters/FieldId'
+        - $ref: '#/components/parameters/CourtId'
       requestBody:
         required: true
         content:
@@ -600,7 +600,7 @@ paths:
         '400':
           description: Target owner not verified
 
-  /api/fields/owner/me:
+  /api/courts/owner/me:
     get:
       tags: [Courts]
       summary: List courts owned by current user
@@ -621,14 +621,14 @@ paths:
 
 
   # ─── Availability ───────────────────────────────────────────────────────────
-  /api/fields/{fieldId}/availability:
+  /api/courts/{courtId}/availability:
     get:
       tags: [Availability]
       summary: Get court availability
       description: Returns available time slots for a court on a given date. Served from Redis cache with real-time updates.
       operationId: getCourtAvailability
       parameters:
-        - $ref: '#/components/parameters/FieldId'
+        - $ref: '#/components/parameters/CourtId'
         - name: date
           in: query
           required: true
@@ -648,14 +648,14 @@ paths:
               schema:
                 $ref: '#/components/schemas/AvailabilityResponse'
 
-  /api/fields/{fieldId}/availability/windows:
+  /api/courts/{courtId}/availability/windows:
     get:
       tags: [Availability]
       summary: Get recurring availability windows
       description: Returns the court's recurring weekly schedule. COURT_OWNER only.
       operationId: getAvailabilityWindows
       parameters:
-        - $ref: '#/components/parameters/FieldId'
+        - $ref: '#/components/parameters/CourtId'
       responses:
         '200':
           description: Availability windows
@@ -674,7 +674,7 @@ paths:
       description: Sets the court's recurring weekly schedule. COURT_OWNER only.
       operationId: updateAvailabilityWindows
       parameters:
-        - $ref: '#/components/parameters/FieldId'
+        - $ref: '#/components/parameters/CourtId'
       requestBody:
         required: true
         content:
@@ -693,14 +693,14 @@ paths:
         '400':
           description: Overlapping or invalid time ranges
 
-  /api/fields/{fieldId}/availability/overrides:
+  /api/courts/{courtId}/availability/overrides:
     get:
       tags: [Availability]
       summary: Get availability overrides
       description: Returns manual date/time overrides (maintenance, holidays, private events).
       operationId: getAvailabilityOverrides
       parameters:
-        - $ref: '#/components/parameters/FieldId'
+        - $ref: '#/components/parameters/CourtId'
         - name: fromDate
           in: query
           schema:
@@ -729,7 +729,7 @@ paths:
       description: Blocks specific dates/times. May trigger cancellation of conflicting recurring bookings.
       operationId: createAvailabilityOverride
       parameters:
-        - $ref: '#/components/parameters/FieldId'
+        - $ref: '#/components/parameters/CourtId'
       requestBody:
         required: true
         content:
@@ -744,13 +744,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/AvailabilityOverride'
 
-  /api/fields/{fieldId}/availability/overrides/{overrideId}:
+  /api/courts/{courtId}/availability/overrides/{overrideId}:
     delete:
       tags: [Availability]
       summary: Remove availability override
       operationId: deleteAvailabilityOverride
       parameters:
-        - $ref: '#/components/parameters/FieldId'
+        - $ref: '#/components/parameters/CourtId'
         - name: overrideId
           in: path
           required: true
@@ -810,7 +810,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
 
   # ─── Map Aggregated Endpoint ────────────────────────────────────────────────
-  /api/fields/map:
+  /api/courts/map:
     get:
       tags: [Courts]
       summary: Aggregated map data
@@ -903,13 +903,13 @@ paths:
                     items:
                       $ref: '#/components/schemas/CourtSummary'
 
-  /api/users/me/favorites/{fieldId}:
+  /api/users/me/favorites/{courtId}:
     put:
       tags: [Favorites]
       summary: Add court to favorites
       operationId: addFavorite
       parameters:
-        - $ref: '#/components/parameters/FieldId'
+        - $ref: '#/components/parameters/CourtId'
       responses:
         '204':
           description: Added to favorites
@@ -918,19 +918,19 @@ paths:
       summary: Remove court from favorites
       operationId: removeFavorite
       parameters:
-        - $ref: '#/components/parameters/FieldId'
+        - $ref: '#/components/parameters/CourtId'
       responses:
         '204':
           description: Removed from favorites
 
   # ─── Ratings ────────────────────────────────────────────────────────────────
-  /api/fields/{fieldId}/ratings:
+  /api/courts/{courtId}/ratings:
     get:
       tags: [Ratings]
       summary: Get court ratings and reviews
       operationId: getCourtRatings
       parameters:
-        - $ref: '#/components/parameters/FieldId'
+        - $ref: '#/components/parameters/CourtId'
         - name: page
           in: query
           schema:
@@ -954,7 +954,7 @@ paths:
       description: Only allowed after a completed booking at this court. CUSTOMER role only.
       operationId: submitRating
       parameters:
-        - $ref: '#/components/parameters/FieldId'
+        - $ref: '#/components/parameters/CourtId'
       requestBody:
         required: true
         content:
@@ -971,13 +971,13 @@ paths:
 
 
   # ─── Pricing ────────────────────────────────────────────────────────────────
-  /api/fields/{fieldId}/pricing:
+  /api/courts/{courtId}/pricing:
     get:
       tags: [Pricing]
       summary: Get dynamic pricing rules
       operationId: getPricingRules
       parameters:
-        - $ref: '#/components/parameters/FieldId'
+        - $ref: '#/components/parameters/CourtId'
       responses:
         '200':
           description: Pricing rules
@@ -991,7 +991,7 @@ paths:
       description: Configure peak/off-peak multipliers by day and time. COURT_OWNER only.
       operationId: updatePricingRules
       parameters:
-        - $ref: '#/components/parameters/FieldId'
+        - $ref: '#/components/parameters/CourtId'
       requestBody:
         required: true
         content:
@@ -1002,13 +1002,13 @@ paths:
         '200':
           description: Pricing rules updated
 
-  /api/fields/{fieldId}/cancellation-policy:
+  /api/courts/{courtId}/cancellation-policy:
     get:
       tags: [Pricing]
       summary: Get cancellation policy
       operationId: getCancellationPolicy
       parameters:
-        - $ref: '#/components/parameters/FieldId'
+        - $ref: '#/components/parameters/CourtId'
       responses:
         '200':
           description: Cancellation policy tiers
@@ -1024,7 +1024,7 @@ paths:
         If not configured, default policy applies (24h+=100%, 12-24h=50%, <12h=0%).
       operationId: updateCancellationPolicy
       parameters:
-        - $ref: '#/components/parameters/FieldId'
+        - $ref: '#/components/parameters/CourtId'
       requestBody:
         required: true
         content:
@@ -1093,7 +1093,7 @@ paths:
           required: true
           schema:
             type: string
-        - name: fieldId
+        - name: courtId
           in: query
           required: true
           schema:
@@ -1134,7 +1134,7 @@ paths:
           schema:
             type: string
             format: date
-        - name: fieldId
+        - name: courtId
           in: query
           schema:
             type: string
@@ -1171,7 +1171,7 @@ paths:
           schema:
             type: string
             format: date
-        - name: fieldId
+        - name: courtId
           in: query
           schema:
             type: string
@@ -1864,8 +1864,8 @@ components:
       description: RS256 JWT access token. See Requirement 1 for claims structure.
 
   parameters:
-    FieldId:
-      name: fieldId
+    CourtId:
+      name: courtId
       in: path
       required: true
       schema:
@@ -2361,7 +2361,7 @@ components:
     AvailabilityResponse:
       type: object
       properties:
-        fieldId:
+        courtId:
           type: string
           format: uuid
         date:
@@ -2474,7 +2474,7 @@ components:
         matchId:
           type: string
           format: uuid
-        fieldId:
+        courtId:
           type: string
           format: uuid
         courtName:
@@ -2746,7 +2746,7 @@ components:
           items:
             type: object
             properties:
-              fieldId:
+              courtId:
                 type: string
                 format: uuid
               courtName:
