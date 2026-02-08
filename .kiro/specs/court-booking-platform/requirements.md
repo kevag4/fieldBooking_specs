@@ -192,11 +192,11 @@ graph TB
 
 **DevOps & Deployment**
 - **Terraform**: Infrastructure as Code for DigitalOcean resource provisioning. Terraform plan output posted as PR comment for review before apply.
-- **GitHub Actions**: CI/CD pipeline with automated testing and deployment
-  - **Build Step**: Compile, run unit tests, run property-based tests, build Docker image
-  - **Image Tagging**: Git commit SHA for all builds; semantic version tags (e.g., `v1.2.3`) for release branches
-  - **Security Scan**: Container image vulnerability scanning via Trivy before pushing to registry
-  - **Migration Validation**: Flyway migration dry-run (`flyway validate`) in CI against a temporary database to catch schema issues before deployment
+- **GitHub Actions**: CI/CD pipeline with automated testing and progressive deployment
+  - **PR Checks (gate for merge)**: Lint checks, compile, unit tests, property-based tests, integration tests, Flyway migration validation (`flyway validate` against temporary DB), container image vulnerability scan (Trivy)
+  - **Image Tagging**: Git commit SHA for all builds; release candidate tags (`rc-v1.2.3`) after staging validation; final release tags (`v1.2.3`) on production deploy
+  - **Progressive Deployment Pipeline**: merge to `develop` → auto-deploy to dev → auto-deploy to test → trigger QA functional regression (cross-repo via `repository_dispatch`) → if passed: auto-deploy to staging → smoke suite → stress suite → if passed: tag `rc-v1.2.3` → manual production deploy (promotes to `v1.2.3`)
+  - **Cross-Repo QA Trigger**: Service repos trigger the `court-booking-qa` repo via GitHub Actions `repository_dispatch` events, passing deployed version, service name, and target environment as payload
   - **Terraform Review**: `terraform plan` output posted as PR comment; `terraform apply` requires manual approval for staging/production
 - **Container Registry**: Private Docker registry integrated with DOKS
 - **doctl CLI**: Command-line tool for DigitalOcean automation
@@ -232,7 +232,7 @@ graph TB
   - `booking-events` topic: partitioned by `courtId` to guarantee ordering per court (ensures availability updates are processed in sequence)
   - `notification-events` topic: partitioned by `userId` to guarantee notification ordering per user
   - `analytics-events` topic: partitioned by `courtId` for court-level aggregation
-- **Latency Expectations**: Upstash Kafka operates over HTTPS, adding ~50-100ms latency per message compared to self-hosted. Availability updates should propagate to connected clients within 2 seconds of booking completion. If latency exceeds this threshold consistently, migrate to self-hosted Strimzi Kafka on Kubernetes.
+- **Latency Expectations**: Upstash Kafka operates over HTTPS, adding ~50-100ms latency per message compared to self-hosted. Availability updates should propagate to connected clients within 2 seconds of booking completion (see Requirement 19, criterion 11). If latency exceeds this threshold consistently, migrate to self-hosted Strimzi Kafka on Kubernetes.
 
 **Real-time (WebSocket - Managed by Transaction Service, backed by Redis Pub/Sub)**
 - Availability updates: Transaction Service → Connected clients (triggered by booking events)
@@ -335,9 +335,16 @@ The project uses a multi-repository architecture to enforce clear ownership boun
 **Repository Conventions:**
 - Each application repository has its own GitHub Actions CI/CD pipeline
 - Docker images are tagged with Git commit SHA and pushed to DigitalOcean Container Registry
-- Release branches use semantic version tags (e.g., `v1.2.3`)
+- Release candidate images tagged `rc-v1.2.3` after staging validation; promoted to `v1.2.3` on production deploy
+- All repositories use semantic versioning (major.minor.patch) for releases
 - Infrastructure changes require PR review with Terraform plan output before merge
-- Branch strategy: `main` (production-ready), `develop` (integration), feature branches from `develop`
+- Branch strategy: `main` (production-ready), `develop` (integration), feature branches from `develop`, hotfix branches from `main`
+
+**Branch Protection Rules (all repositories):**
+- `main` branch: direct push forbidden; requires PR with at least 1 collaborator approval; requires passing CI checks (lint, unit tests, integration tests); merge via squash or merge commit
+- `develop` branch: direct push forbidden; requires PR with at least 1 collaborator approval; requires passing CI checks (lint, unit tests, integration tests)
+- Feature branches: created from `develop`, merged back to `develop` via PR
+- Hotfix branches: created from `main` for critical production fixes; requires PR + approval; follows abbreviated pipeline (PR checks → merge to `main` → deploy to staging → smoke test → manual production deploy); must be back-merged to `develop` after production deploy
 
 ## Customer User Journey
 
@@ -1323,26 +1330,49 @@ For split-payment bookings, the same calculation applies to the total booking am
 8. THE Transaction_Service schema SHALL own bookings, payments, notifications, device_tokens, and audit_logs tables
 9. THE Transaction_Service SHALL execute its own Flyway migrations independently from Platform_Service
 
-### Requirement 19: Caching and Performance Optimization
+### Requirement 19: Performance, Scalability, and Caching
 
-**User Story:** As a user, I want fast response times for court searches, map interactions, and availability checks, so that I have a smooth booking experience.
+**User Story:** As a user, I want fast response times for court searches, map interactions, and availability checks, so that I have a smooth booking experience. As a platform operator, I want the system to handle expected traffic loads reliably.
 
-#### Acceptance Criteria
+#### Non-Functional Performance Requirements
 
-1. WHEN court data is requested, THE Platform_Service SHALL serve frequently accessed data from Redis cache
-2. WHEN availability is checked, THE Platform_Service SHALL use cached availability data with real-time updates
-3. WHEN cache entries expire, THE Platform_Service SHALL refresh data from the primary database
-4. WHERE cache invalidation is needed, THE Platform_Service SHALL remove stale entries and update dependent caches
-5. WHEN high load occurs, THE Platform_Service SHALL maintain performance through effective caching strategies
-6. WHEN the map view is loaded, THE Platform_Service SHALL provide an aggregated API endpoint that returns courts, open matches, and weather data in a single response to minimize round trips
-7. THE Platform_Service SHALL cache weather forecast data in Redis with a 5-10 minute TTL to minimize external API calls
-8. THE Platform_Service SHALL cache court data in Redis with event-driven invalidation (courts change infrequently)
-9. THE Transaction_Service SHALL use Redis for waitlist queue management with fast enqueue/dequeue operations
-10. THE Transaction_Service SHALL use Redis Pub/Sub as the WebSocket backend to enable horizontal scaling of real-time connections across multiple pods
-11. THE Platform_Service SHALL use the PostgreSQL read replica for analytics and reporting queries to avoid impacting booking performance
-12. THE Platform_Service SHALL cache open match data in Redis with short TTL and Kafka-driven invalidation on match status changes
-13. WHEN Redis becomes unavailable, THE system SHALL degrade gracefully: cache misses fall through to PostgreSQL queries, rate limiting switches to in-memory per-pod limits, WebSocket connections continue on the local pod but without cross-pod broadcasting via Pub/Sub, and waitlist operations return a temporary unavailability error with retry guidance to the client
-14. WHEN Redis recovers from an outage, THE Platform_Service SHALL automatically resume caching and THE Transaction_Service SHALL re-establish Pub/Sub subscriptions without requiring pod restarts
+**Response Time SLAs:**
+1. ALL API endpoints SHALL respond within 500ms average response time under normal load conditions
+2. ALL API endpoints SHALL respond within 1000ms (1 second) under high load / peak traffic conditions
+3. THE Platform_Service availability check endpoint (`GET /api/courts/{courtId}/availability`) SHALL respond within 200ms (p95) under normal load
+4. THE Platform_Service court search endpoint (`GET /api/courts`) SHALL respond within 500ms (p95) under normal load
+5. THE Transaction_Service booking creation endpoint (`POST /api/bookings`) SHALL respond within 1000ms (p95) under normal load
+6. THE Transaction_Service payment processing endpoints SHALL respond within 2000ms (p95) under normal load (includes Stripe API round-trip)
+
+**Throughput and Concurrency Targets:**
+7. THE system SHALL support 10 concurrent requests per second as the average sustained load
+8. THE system SHALL support 50 concurrent requests per second during peak traffic periods without degradation beyond the 1-second response time SLA
+9. THE system SHALL be stress-tested at 100 concurrent requests per second as the initial stress testing baseline
+10. THE system SHALL maintain less than 1% error rate under normal load (10 req/s) and less than 5% error rate under peak load (50 req/s)
+
+**Real-Time Performance:**
+11. WHEN a booking is created or cancelled, THE availability update SHALL propagate to connected WebSocket clients within 2 seconds
+12. THE WebSocket infrastructure SHALL support up to 10,000 concurrent connections per Transaction Service pod
+
+#### Caching Strategy
+
+13. WHEN court data is requested, THE Platform_Service SHALL serve frequently accessed data from Redis cache
+14. WHEN availability is checked, THE Platform_Service SHALL use cached availability data with real-time updates
+15. WHEN cache entries expire, THE Platform_Service SHALL refresh data from the primary database
+16. WHERE cache invalidation is needed, THE Platform_Service SHALL remove stale entries and update dependent caches
+17. WHEN high load occurs, THE Platform_Service SHALL maintain performance through effective caching strategies
+18. WHEN the map view is loaded, THE Platform_Service SHALL provide an aggregated API endpoint that returns courts, open matches, and weather data in a single response to minimize round trips
+19. THE Platform_Service SHALL cache weather forecast data in Redis with a 5-10 minute TTL to minimize external API calls
+20. THE Platform_Service SHALL cache court data in Redis with event-driven invalidation (courts change infrequently)
+21. THE Transaction_Service SHALL use Redis for waitlist queue management with fast enqueue/dequeue operations
+22. THE Transaction_Service SHALL use Redis Pub/Sub as the WebSocket backend to enable horizontal scaling of real-time connections across multiple pods
+23. THE Platform_Service SHALL use the PostgreSQL read replica for analytics and reporting queries to avoid impacting booking performance
+24. THE Platform_Service SHALL cache open match data in Redis with short TTL and Kafka-driven invalidation on match status changes
+
+#### Graceful Degradation
+
+25. WHEN Redis becomes unavailable, THE system SHALL degrade gracefully: cache misses fall through to PostgreSQL queries, rate limiting switches to in-memory per-pod limits, WebSocket connections continue on the local pod but without cross-pod broadcasting via Pub/Sub, and waitlist operations return a temporary unavailability error with retry guidance to the client
+26. WHEN Redis recovers from an outage, THE Platform_Service SHALL automatically resume caching and THE Transaction_Service SHALL re-establish Pub/Sub subscriptions without requiring pod restarts
 
 ### Requirement 20: Local Development Environment
 
@@ -1387,13 +1417,14 @@ For split-payment bookings, the same calculation applies to the total booking am
 **Stress and Performance Testing:**
 15. THE QA framework SHALL include stress tests using Locust for load testing with detailed reporting
 16. WHEN stress tests are executed, THE framework SHALL simulate high concurrent booking attempts for the same time slot
-17. THE QA framework SHALL test system behavior under load with configurable user counts (100, 500, 1000+ concurrent users)
-18. WHEN stress tests run, THE framework SHALL measure response times, throughput, and error rates
-19. THE QA framework SHALL enforce performance baselines: p95 response time < 200ms for availability checks, < 500ms for court search, < 1000ms for booking creation, < 2000ms for payment processing
-20. THE QA framework SHALL test WebSocket connection scalability with multiple concurrent connections (target: 5,000 concurrent connections)
-21. THE QA framework SHALL test database connection pool behavior under high load
-22. THE QA framework SHALL test cache performance and hit rates under various load patterns
-23. WHEN performance degradation is detected, THE framework SHALL generate detailed performance reports with Locust HTML reports
+17. THE QA framework SHALL define three load profiles: "normal" (10 concurrent requests/second), "peak" (50 concurrent requests/second), and "stress" (100 concurrent requests/second)
+18. WHEN stress tests run, THE framework SHALL measure response times (avg, p50, p95, p99), throughput, and error rates
+19. THE QA framework SHALL enforce performance baselines aligned with Requirement 19: average response time < 500ms under normal load, < 1000ms under peak load; p95 < 200ms for availability checks, < 500ms for court search, < 1000ms for booking creation, < 2000ms for payment processing
+20. THE QA framework SHALL verify that error rate stays below 1% under normal load (10 req/s) and below 5% under peak load (50 req/s)
+21. THE QA framework SHALL test WebSocket connection scalability with multiple concurrent connections (target: 5,000 concurrent connections)
+22. THE QA framework SHALL test database connection pool behavior under high load
+23. THE QA framework SHALL test cache performance and hit rates under various load patterns
+24. WHEN performance degradation is detected, THE framework SHALL generate detailed performance reports with Locust HTML reports
 
 **Contract Testing:**
 24. THE QA framework SHALL include contract tests (using Pact or Spring Cloud Contract) to validate API compatibility between Platform Service and Transaction Service
@@ -1413,12 +1444,16 @@ For split-payment bookings, the same calculation applies to the total booking am
 **Test Environment and CI/CD Integration:**
 35. THE QA framework SHALL run against the dedicated test namespace in the shared DOKS cluster, separate from production
 36. THE test namespace SHALL use a persistent infrastructure (PostgreSQL, Redis) with automated data reset (truncate + reseed) between test runs rather than full environment provisioning
-37. THE QA framework SHALL integrate with GitHub Actions for automated test execution on pull requests
-38. WHEN tests fail, THE framework SHALL provide detailed failure reports with logs, screenshots, and reproduction steps
-39. THE QA framework SHALL support test data management with setup and teardown fixtures using factory patterns (e.g., pytest-factoryboy)
-40. THE QA framework SHALL generate test coverage reports showing API endpoint coverage
-41. WHEN all tests pass, THE CI/CD pipeline SHALL proceed with deployment approval
-42. THE QA framework SHALL support smoke tests for quick validation after deployments (subset of functional tests targeting critical paths: auth, search, booking)
+37. THE QA framework SHALL be triggered automatically via GitHub Actions `repository_dispatch` events from service repositories after deployment to the test environment, receiving the deployed version, service name, and target environment as payload
+38. THE QA framework SHALL also support manual trigger via `workflow_dispatch` for ad-hoc test runs against any environment
+39. WHEN tests fail, THE framework SHALL provide detailed failure reports with logs, screenshots, and reproduction steps
+40. THE QA framework SHALL support test data management with setup and teardown fixtures using factory patterns (e.g., pytest-factoryboy)
+41. THE QA framework SHALL generate test coverage reports showing API endpoint coverage
+42. WHEN the functional regression suite passes on the test environment, THE CI/CD pipeline SHALL automatically promote the deployment to staging
+43. WHEN deployed to staging, THE QA framework SHALL first run a smoke suite (critical path: auth → search → book → cancel) before the full stress suite
+44. WHEN the staging smoke suite and stress suite both pass, THE CI/CD pipeline SHALL tag the Docker image as a release candidate (`rc-v{major}.{minor}.{patch}`)
+45. THE QA framework SHALL support smoke tests for quick validation after production deployments (subset of functional tests targeting critical paths)
+46. WHEN the QA framework reports results, THE results SHALL be posted back to the originating service repository as a GitHub Actions check or PR comment
 
 
 ### Requirement 22: Multi-Environment Deployment with Service Mesh
@@ -1457,28 +1492,51 @@ For split-payment bookings, the same calculation applies to the total booking am
 22. THE staging namespace SHALL use separate managed databases (PostgreSQL, Redis) from production
 23. THE dev and test namespaces SHALL share managed database instances with separate schemas
 
-**Environment Promotion and CI/CD:**
-24. THE CI/CD pipeline SHALL automatically deploy to dev environment on merge to develop branch
-25. THE CI/CD pipeline SHALL deploy to test environment after successful dev deployment and automated tests
-26. THE CI/CD pipeline SHALL deploy to staging environment on merge to main branch with manual approval
-27. THE CI/CD pipeline SHALL deploy to production environment after successful staging validation with manual approval
-28. WHEN deploying to any environment, THE system SHALL execute Istio-aware health checks before routing traffic
-29. WHEN deployment fails, THE system SHALL automatically rollback using Istio traffic shifting
-30. THE deployment process SHALL use Terraform to provision environment-specific infrastructure
+**Environment Promotion and CI/CD Pipeline:**
+
+*PR and Merge Process:*
+24. ALL repositories SHALL enforce branch protection rules: direct push to `main` and `develop` is forbidden; all changes require a Pull Request with at least 1 collaborator approval
+25. BEFORE a PR can be merged, THE CI pipeline SHALL pass all required checks: lint, compile, unit tests, integration tests, property-based tests, and Flyway migration validation
+26. THE CI pipeline SHALL run security scans (Trivy for container images, OWASP dependency check) on every PR
+
+*Progressive Deployment Pipeline:*
+27. WHEN code is merged to the `develop` branch, THE CI/CD pipeline SHALL automatically build, tag (Git commit SHA), and deploy to the dev environment
+28. AFTER successful dev deployment, THE CI/CD pipeline SHALL automatically deploy to the test environment
+29. AFTER successful test deployment, THE CI/CD pipeline SHALL trigger the QA functional regression suite in the `court-booking-qa` repository via GitHub Actions `repository_dispatch` event, passing the deployed version, service name, and environment as payload
+30. WHEN the QA functional regression suite passes on the test environment, THE CI/CD pipeline SHALL automatically deploy to the staging environment
+31. AFTER staging deployment, THE CI/CD pipeline SHALL trigger the QA smoke suite (critical path: auth → search → book → cancel) to catch obvious deployment issues before the full stress run
+32. AFTER the smoke suite passes, THE CI/CD pipeline SHALL trigger the QA stress suite (Locust load tests per Requirement 19 performance SLAs)
+33. WHEN both the staging smoke suite and stress suite pass, THE CI/CD pipeline SHALL tag the Docker image as a release candidate (`rc-v{major}.{minor}.{patch}`) and create a GitHub Release draft
+
+*Production Release:*
+34. THE production deployment SHALL be triggered manually by an authorized team member via GitHub Actions `workflow_dispatch` or by publishing the GitHub Release draft
+35. WHEN production deployment is triggered, THE CI/CD pipeline SHALL deploy the release candidate image and re-tag it as the final release (`v{major}.{minor}.{patch}`)
+36. AFTER production deployment, THE CI/CD pipeline SHALL trigger a smoke suite against production to validate the deployment
+37. THE CI/CD pipeline SHALL provide a one-click rollback mechanism that redeploys the previous release tag to production
+
+*Hotfix Path:*
+38. FOR critical production fixes, THE team SHALL create a hotfix branch from `main` with the same PR and approval requirements
+39. WHEN a hotfix PR is merged to `main`, THE CI/CD pipeline SHALL follow an abbreviated path: deploy to staging → smoke suite → manual production deploy (skipping the full QA regression and stress suite)
+40. AFTER a hotfix is deployed to production, THE hotfix branch SHALL be back-merged to `develop` to keep branches in sync
+
+*Deployment Health and Rollback:*
+41. WHEN deploying to any environment, THE system SHALL execute health checks (liveness, readiness) before routing traffic to new pods
+42. WHEN deployment fails health checks, THE system SHALL automatically rollback to the previous version using Kubernetes rollout undo (or Istio traffic shifting in staging/production)
+43. THE deployment process SHALL use Terraform to provision environment-specific infrastructure with plan/apply approval gates
 
 **Service Mesh Observability:**
-31. THE Istio configuration SHALL provide request-level metrics including latency, error rates, and traffic volume
-32. THE Istio configuration SHALL enable distributed tracing with correlation IDs across all services
-33. WHEN service mesh observability is active, THE system SHALL visualize service dependencies and traffic flow
-34. THE Istio configuration SHALL generate access logs for all service-to-service communication
-35. WHEN anomalies are detected, THE service mesh SHALL trigger alerts based on configurable thresholds
+44. THE Istio configuration SHALL provide request-level metrics including latency, error rates, and traffic volume
+45. THE Istio configuration SHALL enable distributed tracing with correlation IDs across all services
+46. WHEN service mesh observability is active, THE system SHALL visualize service dependencies and traffic flow
+47. THE Istio configuration SHALL generate access logs for all service-to-service communication
+48. WHEN anomalies are detected, THE service mesh SHALL trigger alerts based on configurable thresholds
 
 **Security and Policy Enforcement:**
-36. THE Istio configuration SHALL enforce authentication policies requiring valid JWT tokens for all API requests
-37. THE Istio configuration SHALL implement authorization policies restricting service-to-service communication
-38. WHEN security policies are violated, THE service mesh SHALL deny requests and log security events
-39. THE Istio configuration SHALL implement rate limiting at the service mesh level to prevent abuse
-40. THE production environment SHALL enforce strict security policies while dev/test environments MAY use relaxed policies for development convenience
+49. THE Istio configuration SHALL enforce authentication policies requiring valid JWT tokens for all API requests
+50. THE Istio configuration SHALL implement authorization policies restricting service-to-service communication
+51. WHEN security policies are violated, THE service mesh SHALL deny requests and log security events
+52. THE Istio configuration SHALL implement rate limiting at the service mesh level to prevent abuse
+53. THE production environment SHALL enforce strict security policies while dev/test environments MAY use relaxed policies for development convenience
 
 
 ### Requirement 23: Optional Advertisement System with Feature Flags

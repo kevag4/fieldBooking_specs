@@ -324,18 +324,42 @@ Shared PostgreSQL instance, separate schemas with strict write boundaries:
 Developer ──► GitHub PR ──► GitHub Actions Pipeline:
 
   ┌─────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐
-  │ Build   │───►│ Test     │───►│ Scan     │───►│ Docker   │
-  │ Compile │    │ Unit     │    │ Trivy    │    │ Build    │
+  │ Lint    │───►│ Test     │───►│ Scan     │───►│ Docker   │
+  │ Check   │    │ Unit     │    │ Trivy    │    │ Build    │
   │         │    │ PBT      │    │ OWASP    │    │ Push     │
-  └─────────┘    │ Flyway   │    │ Sonar    │    └────┬─────┘
-                 │ validate │    └──────────┘         │
-                 └──────────┘                         ▼
-                                              ┌──────────────┐
-  ┌──────────┐    ┌──────────┐    ┌──────────┤ Deploy dev    │
-  │ Deploy   │◄───│ Deploy   │◄───│ Deploy   │ (auto)        │
-  │ prod     │    │ staging  │    │ test     │               │
-  │ (manual) │    │ (manual) │    │ (auto)   └──────────────┘
-  └──────────┘    └──────────┘    └──────────┘
+  └─────────┘    │ Integr.  │    │ Sonar    │    └────┬─────┘
+                 │ Flyway   │    └──────────┘         │
+                 │ validate │                         ▼
+                 └──────────┘                  ┌──────────────┐
+                                               │ PR Approved  │
+                                               │ Merge to     │
+                                               │ develop      │
+                                               └──────┬───────┘
+                                                      │
+  ┌──────────────────────────────────────────────────┐│
+  │           Progressive Deployment                  ││
+  │                                                   ▼│
+  │  ┌──────────┐    ┌──────────┐    ┌─────────────┐ │
+  │  │ Deploy   │───►│ Deploy   │───►│ QA Func.    │ │
+  │  │ dev      │    │ test     │    │ Regression  │ │
+  │  │ (auto)   │    │ (auto)   │    │ (repo_disp.)│ │
+  │  └──────────┘    └──────────┘    └──────┬──────┘ │
+  │                                         │ pass   │
+  │  ┌──────────┐    ┌──────────┐    ┌──────▼──────┐ │
+  │  │ Tag      │◄───│ QA Stress│◄───│ Deploy      │ │
+  │  │ rc-v1.x  │    │ Suite    │    │ staging     │ │
+  │  │          │    │ (Locust) │    │ + Smoke     │ │
+  │  └────┬─────┘    └──────────┘    └─────────────┘ │
+  │       │                                           │
+  └───────┼───────────────────────────────────────────┘
+          │
+          ▼
+  ┌──────────────┐
+  │ Deploy prod  │
+  │ (manual)     │
+  │ Tag v1.x     │
+  │ + Smoke      │
+  └──────────────┘
 ```
 
 ## 10. Repository Map
