@@ -726,7 +726,11 @@ graph TD
 - **Confirmation_Timeout**: Configured time period for court owner to confirm pending bookings
 - **Cancellation_Policy**: Court owner-defined rules for refund calculations based on cancellation timing
 - **Terms_and_Conditions**: Legal agreement users must accept during registration
-- **Structured_Logs**: Logs with consistent formatting including correlation IDs and contextual information
+- **Structured_Logs**: JSON-formatted logs with consistent fields including trace IDs, span IDs, user IDs, and contextual information
+- **Trace_ID**: A unique identifier (W3C Trace Context format) that follows a single user request across all services, Kafka events, and external calls for end-to-end traceability
+- **Span_ID**: A unique identifier for a single operation within a trace (e.g., one HTTP call, one database query)
+- **W3C_Trace_Context**: Industry standard for propagating trace context across services via the `traceparent` HTTP header
+- **OpenTelemetry**: Vendor-neutral observability framework for generating, collecting, and exporting traces, metrics, and logs
 - **Log_Indexing**: Process of organizing logs for efficient searching and filtering
 - **Alert_Threshold**: Configurable criteria that trigger administrator notifications
 - **Device_Registration_Token**: Unique identifier for a user's mobile device used for push notifications (FCM for Android, APNs for iOS)
@@ -1286,17 +1290,40 @@ For split-payment bookings, the same calculation applies to the total booking am
 4. WHEN pricing strategies are evaluated, THE Platform_Service SHALL show revenue impact of different pricing configurations
 5. WHERE data export is requested, THE Platform_Service SHALL generate reports in standard formats (CSV, PDF)
 
-### Requirement 16: System Observability and Monitoring
+### Requirement 16: System Observability, Monitoring, and End-to-End Traceability
 
-**User Story:** As a platform administrator (PLATFORM_ADMIN), I want comprehensive monitoring and tracing, so that I can maintain system health and performance.
+**User Story:** As a platform administrator (PLATFORM_ADMIN), I want comprehensive monitoring and end-to-end tracing, so that every user-initiated request is traceable across all services within one click and I can debug production issues quickly.
 
 #### Acceptance Criteria
 
+**OpenTelemetry Instrumentation:**
 1. THE Platform_Service SHALL emit OpenTelemetry traces for all critical operations including authentication and court management
 2. THE Transaction_Service SHALL emit OpenTelemetry traces for all booking and payment operations
-3. WHEN system metrics are collected, THE Platform_Service SHALL expose Prometheus metrics for performance monitoring
-4. WHEN errors occur, THE Transaction_Service SHALL log structured error information with correlation IDs
-5. THE Platform_Service SHALL integrate with Jaeger for distributed tracing across microservices
+3. WHEN system metrics are collected, BOTH services SHALL expose Prometheus metrics for performance monitoring
+4. BOTH services SHALL integrate with Jaeger for distributed tracing visualization
+
+**End-to-End Trace Propagation:**
+5. WHEN a user-initiated request arrives at the NGINX Ingress, THE ingress layer SHALL generate a unique trace ID (W3C Trace Context `traceparent` header) if one is not already present
+6. BOTH services SHALL propagate the trace ID across all synchronous HTTP calls (including internal service-to-service calls between Platform Service and Transaction Service)
+7. WHEN a service publishes a Kafka event, THE producing service SHALL include the trace ID in the Kafka message headers so that consumers can continue the same trace
+8. WHEN a WebSocket message is sent to a client, THE Transaction_Service SHALL include the originating trace ID in the message metadata
+9. BOTH services SHALL propagate the trace ID to all external service calls (Stripe, SendGrid, FCM, OAuth providers, Weather API) as outgoing span context
+10. WHEN a scheduled job (Quartz) executes, THE Transaction_Service SHALL create a new trace linked to the original booking trace ID stored in the job data
+
+**Unified Trace ID in Logs:**
+11. ALL structured log entries from BOTH services SHALL include the active trace ID (`traceId`) and span ID (`spanId`) as top-level fields
+12. THE mobile app SHALL generate a client trace ID on each user action and send it as the `X-Request-ID` header; the backend SHALL link this to the OpenTelemetry trace as a span attribute (`client.request.id`)
+13. THE admin web app SHALL similarly include `X-Request-ID` on all API requests
+
+**One-Click Trace Lookup:**
+14. THE Grafana dashboards SHALL provide a "Trace ID" search field that, given a single trace ID, displays the full end-to-end journey: ingress → service spans → Kafka events → downstream calls → response
+15. THE Loki log queries SHALL be linkable from Jaeger trace views, so that clicking a span in Jaeger opens the corresponding logs filtered by that trace ID and time window
+16. WHEN an error is logged, THE structured log entry SHALL include a deep link (or enough metadata to construct one) to the Jaeger trace view for that request
+
+**User-Centric Trace Correlation:**
+17. BOTH services SHALL tag every trace with the authenticated user's `userId` as a span attribute (`user.id`)
+18. THE Grafana dashboards SHALL support querying all traces for a specific user ID within a time range, enabling "show me everything this user did in the last hour" debugging
+19. WHEN a support ticket is submitted, THE system SHALL capture the most recent trace IDs from the user's session and attach them to the ticket metadata for instant debugging context
 
 ### Requirement 17: Centralized Logging and Alerting
 
@@ -1304,15 +1331,25 @@ For split-payment bookings, the same calculation applies to the total booking am
 
 #### Acceptance Criteria
 
-1. WHEN any service operation occurs, THE Platform_Service and Transaction_Service SHALL produce structured logs with consistent formatting
-2. WHEN logs are generated, BOTH services SHALL include correlation IDs, timestamps, log levels, and contextual information
-3. THE Platform_Service SHALL integrate with a centralized logging system (Loki with Grafana) for log aggregation
-4. WHEN logs are collected, THE logging system SHALL index logs for efficient searching and filtering
-5. WHEN ERROR or WARN level logs are generated, THE logging system SHALL trigger alerts to notify administrators
-6. THE Platform_Service SHALL provide configurable alert thresholds for different error types and severity levels
-7. WHEN critical errors occur, THE logging system SHALL send immediate notifications via multiple channels (email, Slack, PagerDuty)
-8. THE Platform_Service SHALL maintain log retention policies compliant with data protection regulations
-9. WHEN administrators search logs, THE logging system SHALL provide full-text search capabilities across all indexed fields
+**Structured Log Format:**
+1. WHEN any service operation occurs, THE Platform_Service and Transaction_Service SHALL produce structured JSON logs with consistent formatting
+2. WHEN logs are generated, BOTH services SHALL include: `traceId`, `spanId`, `userId` (if authenticated), `requestId`, timestamp, log level, service name, and contextual information
+3. BOTH services SHALL use a consistent log schema so that logs from different services are queryable with the same Loki/Grafana queries
+
+**Log Aggregation and Search:**
+4. THE system SHALL integrate with Loki for centralized log aggregation from all services and infrastructure components
+5. WHEN logs are collected, THE logging system SHALL index logs for efficient searching and filtering by trace ID, user ID, service name, log level, and time range
+6. WHEN administrators search logs, THE logging system SHALL provide full-text search capabilities across all indexed fields
+7. THE Grafana log explorer SHALL support jumping from a log entry directly to the associated Jaeger trace (via trace ID link)
+
+**Alerting:**
+8. WHEN ERROR or WARN level logs exceed configurable thresholds, THE logging system SHALL trigger alerts to notify administrators
+9. THE Platform_Service SHALL provide configurable alert thresholds for different error types and severity levels
+10. WHEN critical errors occur, THE logging system SHALL send immediate notifications via multiple channels (email, Slack, PagerDuty)
+
+**Retention and Compliance:**
+11. THE Platform_Service SHALL maintain log retention policies compliant with data protection regulations
+12. THE system SHALL retain production logs for a minimum of 30 days with full searchability, and archive logs for 90 days in compressed storage
 
 ### Requirement 18: Database Management and Migrations
 
