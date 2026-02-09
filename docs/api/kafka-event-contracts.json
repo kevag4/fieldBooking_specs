@@ -1,0 +1,616 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Court Booking Platform — Kafka Event Contracts",
+  "description": "Formal JSON Schema definitions for all Kafka events exchanged between Platform Service and Transaction Service via Upstash Kafka. Single source of truth for async event interfaces.",
+
+  "definitions": {
+
+    "EventEnvelope": {
+      "description": "Common envelope wrapping every Kafka message value. All fields are required.",
+      "type": "object",
+      "required": ["eventId", "eventType", "source", "timestamp", "traceId", "spanId", "payload"],
+      "properties": {
+        "eventId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Unique event ID for consumer-side idempotency and deduplication."
+        },
+        "eventType": {
+          "type": "string",
+          "description": "Discriminator — determines the payload schema."
+        },
+        "source": {
+          "type": "string",
+          "enum": ["platform-service", "transaction-service"],
+          "description": "Service that produced this event."
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO 8601 UTC timestamp when the event was produced."
+        },
+        "traceId": {
+          "type": "string",
+          "description": "W3C Trace Context trace ID for end-to-end tracing (Req 16.7)."
+        },
+        "spanId": {
+          "type": "string",
+          "description": "OpenTelemetry span ID of the producing operation."
+        },
+        "correlationId": {
+          "type": ["string", "null"],
+          "format": "uuid",
+          "description": "Optional ID linking related events across topics."
+        },
+        "payload": {
+          "type": "object",
+          "description": "Event-specific data. Schema determined by eventType."
+        }
+      }
+    }
+  },
+
+  "topics": {
+
+    "booking-events": {
+      "description": "Booking lifecycle events published by Transaction Service. Platform Service consumes these for cache invalidation and availability updates. Partitioned by courtId to guarantee ordering per court.",
+      "partitionKey": "courtId",
+      "producer": "transaction-service",
+      "consumers": ["platform-service"],
+      "requirements": ["Req 7.6", "Req 8.4", "Req 12", "Req 19.20"],
+      "events": {
+
+        "BOOKING_CREATED": {
+          "description": "Published when a new booking is created (customer or manual). Triggers availability cache invalidation on Platform Service and WebSocket broadcast to connected clients.",
+          "requirements": ["Req 7.6 — cache invalidation", "Req 8.4 — publish after atomic booking creation"],
+          "payload": {
+            "type": "object",
+            "required": ["bookingId", "courtId", "userId", "date", "startTime", "endTime", "durationMinutes", "status", "bookingType"],
+            "properties": {
+              "bookingId": { "type": "string", "format": "uuid" },
+              "courtId": { "type": "string", "format": "uuid", "description": "Partition key." },
+              "userId": { "type": ["string", "null"], "format": "uuid", "description": "Null for manual bookings without linked customer." },
+              "courtOwnerId": { "type": "string", "format": "uuid" },
+              "date": { "type": "string", "format": "date", "description": "Booking date in court's local timezone." },
+              "startTime": { "type": "string", "pattern": "^\\d{2}:\\d{2}$", "description": "HH:mm in court's local timezone." },
+              "endTime": { "type": "string", "pattern": "^\\d{2}:\\d{2}$" },
+              "durationMinutes": { "type": "integer" },
+              "status": { "type": "string", "enum": ["CONFIRMED", "PENDING_CONFIRMATION"] },
+              "bookingType": { "type": "string", "enum": ["CUSTOMER", "MANUAL"] },
+              "totalAmountCents": { "type": ["integer", "null"], "description": "Null for manual bookings." },
+              "isOpenMatch": { "type": "boolean", "default": false },
+              "isSplitPayment": { "type": "boolean", "default": false },
+              "recurringGroupId": { "type": ["string", "null"], "format": "uuid", "description": "Non-null if part of a recurring booking." }
+            }
+          }
+        },
+
+        "BOOKING_CONFIRMED": {
+          "description": "Published when a court owner confirms a PENDING_CONFIRMATION booking. Triggers availability finalization and WebSocket update.",
+          "requirements": ["Req 10.7 — court owner confirms pending booking"],
+          "payload": {
+            "type": "object",
+            "required": ["bookingId", "courtId", "userId", "date", "startTime", "endTime", "confirmedBy"],
+            "properties": {
+              "bookingId": { "type": "string", "format": "uuid" },
+              "courtId": { "type": "string", "format": "uuid" },
+              "userId": { "type": "string", "format": "uuid" },
+              "courtOwnerId": { "type": "string", "format": "uuid" },
+              "date": { "type": "string", "format": "date" },
+              "startTime": { "type": "string", "pattern": "^\\d{2}:\\d{2}$" },
+              "endTime": { "type": "string", "pattern": "^\\d{2}:\\d{2}$" },
+              "confirmedBy": { "type": "string", "format": "uuid", "description": "Court owner who confirmed." },
+              "capturedAmountCents": { "type": "integer" },
+              "platformFeeCents": { "type": "integer" },
+              "courtOwnerNetCents": { "type": "integer" }
+            }
+          }
+        },
+
+        "BOOKING_CANCELLED": {
+          "description": "Published when a booking is cancelled (by customer, court owner, or system timeout). Triggers availability cache invalidation, WebSocket broadcast, and waitlist processing.",
+          "requirements": ["Req 7.5 — availability update on cancel", "Req 12 — cancellation processing", "Req 26.4 — waitlist trigger on cancellation"],
+          "payload": {
+            "type": "object",
+            "required": ["bookingId", "courtId", "date", "startTime", "endTime", "cancelledBy", "cancellationReason"],
+            "properties": {
+              "bookingId": { "type": "string", "format": "uuid" },
+              "courtId": { "type": "string", "format": "uuid" },
+              "userId": { "type": ["string", "null"], "format": "uuid" },
+              "courtOwnerId": { "type": "string", "format": "uuid" },
+              "date": { "type": "string", "format": "date" },
+              "startTime": { "type": "string", "pattern": "^\\d{2}:\\d{2}$" },
+              "endTime": { "type": "string", "pattern": "^\\d{2}:\\d{2}$" },
+              "cancelledBy": { "type": "string", "enum": ["CUSTOMER", "COURT_OWNER", "SYSTEM"], "description": "SYSTEM for timeout auto-cancellations." },
+              "cancellationReason": { "type": "string" },
+              "refundAmountCents": { "type": "integer", "description": "0 if no refund (no-refund window)." },
+              "refundPercentage": { "type": "number", "minimum": 0, "maximum": 100 },
+              "waitlistEnabled": { "type": "boolean", "description": "Whether this court has waitlist enabled — consumers use this to decide whether to trigger waitlist processing." }
+            }
+          }
+        },
+
+        "BOOKING_MODIFIED": {
+          "description": "Published when a booking's time slot is changed. Triggers cache invalidation for both old and new slots.",
+          "requirements": ["Req 12.1–12.2 — booking modification"],
+          "payload": {
+            "type": "object",
+            "required": ["bookingId", "courtId", "userId", "previousDate", "previousStartTime", "previousEndTime", "newDate", "newStartTime", "newEndTime"],
+            "properties": {
+              "bookingId": { "type": "string", "format": "uuid" },
+              "courtId": { "type": "string", "format": "uuid" },
+              "userId": { "type": "string", "format": "uuid" },
+              "previousDate": { "type": "string", "format": "date" },
+              "previousStartTime": { "type": "string", "pattern": "^\\d{2}:\\d{2}$" },
+              "previousEndTime": { "type": "string", "pattern": "^\\d{2}:\\d{2}$" },
+              "newDate": { "type": "string", "format": "date" },
+              "newStartTime": { "type": "string", "pattern": "^\\d{2}:\\d{2}$" },
+              "newEndTime": { "type": "string", "pattern": "^\\d{2}:\\d{2}$" },
+              "priceDifferenceCents": { "type": "integer", "description": "Positive = customer pays more, negative = refund." }
+            }
+          }
+        },
+
+        "BOOKING_COMPLETED": {
+          "description": "Published when a booking's scheduled end time passes and the booking transitions to COMPLETED status. Used for analytics aggregation.",
+          "requirements": ["Req 15 — analytics tracking"],
+          "payload": {
+            "type": "object",
+            "required": ["bookingId", "courtId", "courtOwnerId", "date", "startTime", "endTime", "totalAmountCents"],
+            "properties": {
+              "bookingId": { "type": "string", "format": "uuid" },
+              "courtId": { "type": "string", "format": "uuid" },
+              "courtOwnerId": { "type": "string", "format": "uuid" },
+              "userId": { "type": ["string", "null"], "format": "uuid" },
+              "date": { "type": "string", "format": "date" },
+              "startTime": { "type": "string", "pattern": "^\\d{2}:\\d{2}$" },
+              "endTime": { "type": "string", "pattern": "^\\d{2}:\\d{2}$" },
+              "bookingType": { "type": "string", "enum": ["CUSTOMER", "MANUAL"] },
+              "totalAmountCents": { "type": ["integer", "null"] },
+              "platformFeeCents": { "type": ["integer", "null"] },
+              "courtOwnerNetCents": { "type": ["integer", "null"] },
+              "noShow": { "type": "boolean", "default": false }
+            }
+          }
+        },
+
+        "SLOT_HELD": {
+          "description": "Published when a booking-in-progress temporarily holds a slot (5-minute hold). Triggers real-time availability update via WebSocket.",
+          "requirements": ["Req 7.4 — mark slot temporarily unavailable", "Req 7.10 — release after 5 min"],
+          "payload": {
+            "type": "object",
+            "required": ["courtId", "date", "startTime", "endTime", "holdExpiresAt"],
+            "properties": {
+              "courtId": { "type": "string", "format": "uuid" },
+              "date": { "type": "string", "format": "date" },
+              "startTime": { "type": "string", "pattern": "^\\d{2}:\\d{2}$" },
+              "endTime": { "type": "string", "pattern": "^\\d{2}:\\d{2}$" },
+              "holdExpiresAt": { "type": "string", "format": "date-time" },
+              "heldByUserId": { "type": "string", "format": "uuid" }
+            }
+          }
+        },
+
+        "SLOT_RELEASED": {
+          "description": "Published when a held slot is released (hold expired or booking abandoned). Triggers availability update.",
+          "requirements": ["Req 7.10 — release hold after 5 min timeout"],
+          "payload": {
+            "type": "object",
+            "required": ["courtId", "date", "startTime", "endTime", "releaseReason"],
+            "properties": {
+              "courtId": { "type": "string", "format": "uuid" },
+              "date": { "type": "string", "format": "date" },
+              "startTime": { "type": "string", "pattern": "^\\d{2}:\\d{2}$" },
+              "endTime": { "type": "string", "pattern": "^\\d{2}:\\d{2}$" },
+              "releaseReason": { "type": "string", "enum": ["HOLD_EXPIRED", "PAYMENT_FAILED", "USER_ABANDONED"] }
+            }
+          }
+        }
+      }
+    },
+
+    "notification-events": {
+      "description": "Notification dispatch events published by Transaction Service. Consumed internally by Transaction Service's notification processor which routes to FCM (push), WebSocket (in-app), or SendGrid (email). Partitioned by userId to guarantee notification ordering per user.",
+      "partitionKey": "userId",
+      "producer": "transaction-service",
+      "consumers": ["transaction-service"],
+      "requirements": ["Req 13.4–13.6", "Req 13.12–13.14"],
+      "events": {
+
+        "NOTIFICATION_REQUESTED": {
+          "description": "Generic notification dispatch request. The notification processor determines delivery channel based on user preferences, app state, and urgency level.",
+          "requirements": ["Req 13.4 — publish notification events on booking events", "Req 13.12 — respect notification preferences", "Req 13.13 — urgency levels"],
+          "payload": {
+            "type": "object",
+            "required": ["userId", "notificationType", "urgency", "title", "body"],
+            "properties": {
+              "userId": { "type": "string", "format": "uuid", "description": "Partition key. Target user." },
+              "notificationType": {
+                "type": "string",
+                "enum": [
+                  "BOOKING_CONFIRMED",
+                  "BOOKING_CANCELLED",
+                  "BOOKING_REJECTED",
+                  "BOOKING_PENDING_CONFIRMATION",
+                  "BOOKING_REMINDER",
+                  "PAYMENT_RECEIVED",
+                  "PAYMENT_FAILED",
+                  "PAYMENT_DISPUTE",
+                  "PAYOUT_COMPLETED",
+                  "REFUND_COMPLETED",
+                  "WAITLIST_SLOT_AVAILABLE",
+                  "WAITLIST_EXPIRED",
+                  "MATCH_JOIN_REQUEST",
+                  "MATCH_JOIN_APPROVED",
+                  "MATCH_JOIN_DECLINED",
+                  "MATCH_PLAYER_LEFT",
+                  "SPLIT_PAYMENT_REQUESTED",
+                  "SPLIT_PAYMENT_RECEIVED",
+                  "SPLIT_PAYMENT_EXPIRED",
+                  "PENDING_CONFIRMATION_REMINDER",
+                  "SUBSCRIPTION_EXPIRING",
+                  "SUBSCRIPTION_EXPIRED",
+                  "SUBSCRIPTION_RENEWED",
+                  "VERIFICATION_APPROVED",
+                  "VERIFICATION_REJECTED",
+                  "SUPPORT_TICKET_UPDATED",
+                  "REMINDER_ALERT",
+                  "WEATHER_ALERT"
+                ]
+              },
+              "urgency": {
+                "type": "string",
+                "enum": ["CRITICAL", "STANDARD", "PROMOTIONAL"],
+                "description": "CRITICAL: always immediate (payment failures, cancellations). STANDARD: respects do-not-disturb. PROMOTIONAL: respects opt-out."
+              },
+              "title": { "type": "object", "properties": { "el": { "type": "string" }, "en": { "type": "string" } }, "required": ["el", "en"], "description": "Localized notification title." },
+              "body": { "type": "object", "properties": { "el": { "type": "string" }, "en": { "type": "string" } }, "required": ["el", "en"], "description": "Localized notification body." },
+              "data": {
+                "type": "object",
+                "description": "Structured payload for client-side deep linking and display.",
+                "properties": {
+                  "bookingId": { "type": ["string", "null"], "format": "uuid" },
+                  "courtId": { "type": ["string", "null"], "format": "uuid" },
+                  "matchId": { "type": ["string", "null"], "format": "uuid" },
+                  "paymentId": { "type": ["string", "null"], "format": "uuid" },
+                  "ticketId": { "type": ["string", "null"], "format": "uuid" },
+                  "deepLink": { "type": ["string", "null"], "description": "In-app navigation target, e.g., '/bookings/{id}'." }
+                }
+              },
+              "channels": {
+                "type": "array",
+                "items": { "type": "string", "enum": ["PUSH", "EMAIL", "IN_APP", "WEB_PUSH"] },
+                "description": "Preferred delivery channels. Notification processor may override based on user preferences and app state."
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "court-update-events": {
+      "description": "Court configuration changes published by Platform Service. Transaction Service consumes these to update its local pricing cache, validate booking constraints, and adjust scheduled jobs. Partitioned by courtId.",
+      "partitionKey": "courtId",
+      "producer": "platform-service",
+      "consumers": ["transaction-service"],
+      "requirements": ["Req 2.8 — propagate court updates", "Req 2.17 — notify affected bookings on type changes", "Req 27.7–27.8 — dynamic pricing"],
+      "events": {
+
+        "COURT_UPDATED": {
+          "description": "Published when court details are updated (name, type, capacity, duration, confirmation mode, waitlist config). Transaction Service uses this to validate future bookings against new constraints.",
+          "requirements": ["Req 2.8 — propagate updates to dependent services"],
+          "payload": {
+            "type": "object",
+            "required": ["courtId", "courtOwnerId", "changedFields"],
+            "properties": {
+              "courtId": { "type": "string", "format": "uuid" },
+              "courtOwnerId": { "type": "string", "format": "uuid" },
+              "changedFields": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "List of changed field names, e.g., ['maxCapacity', 'confirmationMode']."
+              },
+              "courtName": { "type": ["string", "null"] },
+              "courtType": { "type": ["string", "null"], "enum": ["TENNIS", "PADEL", "BASKETBALL", "FOOTBALL_5X5", null] },
+              "locationType": { "type": ["string", "null"], "enum": ["INDOOR", "OUTDOOR", null] },
+              "bookingDurationMinutes": { "type": ["integer", "null"] },
+              "maxCapacity": { "type": ["integer", "null"] },
+              "confirmationMode": { "type": ["string", "null"], "enum": ["INSTANT", "MANUAL", null] },
+              "confirmationTimeoutHours": { "type": ["integer", "null"] },
+              "waitlistEnabled": { "type": ["boolean", "null"] },
+              "version": { "type": "integer", "description": "Optimistic lock version for conflict detection." }
+            }
+          }
+        },
+
+        "PRICING_UPDATED": {
+          "description": "Published when court pricing rules change (base price, peak/off-peak multipliers, special pricing). Transaction Service uses this to calculate correct booking amounts.",
+          "requirements": ["Req 8.12 — apply new pricing to future recurring instances", "Req 27.7–27.8 — dynamic pricing config"],
+          "payload": {
+            "type": "object",
+            "required": ["courtId", "courtOwnerId", "effectiveFrom"],
+            "properties": {
+              "courtId": { "type": "string", "format": "uuid" },
+              "courtOwnerId": { "type": "string", "format": "uuid" },
+              "basePriceCents": { "type": "integer" },
+              "pricingRules": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["dayOfWeek", "startTime", "endTime", "multiplier"],
+                  "properties": {
+                    "dayOfWeek": { "type": "string", "enum": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"] },
+                    "startTime": { "type": "string", "pattern": "^\\d{2}:\\d{2}$" },
+                    "endTime": { "type": "string", "pattern": "^\\d{2}:\\d{2}$" },
+                    "multiplier": { "type": "number", "minimum": 0.1, "maximum": 5.0 }
+                  }
+                }
+              },
+              "effectiveFrom": { "type": "string", "format": "date", "description": "Date from which new pricing applies." }
+            }
+          }
+        },
+
+        "AVAILABILITY_UPDATED": {
+          "description": "Published when availability windows or overrides change. Transaction Service uses this to validate booking requests and Platform Service invalidates availability cache.",
+          "requirements": ["Req 2.11–2.13 — availability management", "Req 8.11 — cancel bookings on blocked dates"],
+          "payload": {
+            "type": "object",
+            "required": ["courtId", "courtOwnerId", "changeType"],
+            "properties": {
+              "courtId": { "type": "string", "format": "uuid" },
+              "courtOwnerId": { "type": "string", "format": "uuid" },
+              "changeType": { "type": "string", "enum": ["RECURRING_WINDOWS_UPDATED", "OVERRIDE_CREATED", "OVERRIDE_DELETED"] },
+              "affectedDateRange": {
+                "type": "object",
+                "properties": {
+                  "from": { "type": "string", "format": "date" },
+                  "to": { "type": "string", "format": "date" }
+                },
+                "description": "Date range affected by the change. Null for recurring window changes (affects all future dates)."
+              },
+              "override": {
+                "type": ["object", "null"],
+                "properties": {
+                  "overrideId": { "type": "string", "format": "uuid" },
+                  "date": { "type": "string", "format": "date" },
+                  "startTime": { "type": ["string", "null"], "pattern": "^\\d{2}:\\d{2}$" },
+                  "endTime": { "type": ["string", "null"], "pattern": "^\\d{2}:\\d{2}$" },
+                  "reason": { "type": "string" }
+                },
+                "description": "Override details when changeType is OVERRIDE_CREATED."
+              }
+            }
+          }
+        },
+
+        "CANCELLATION_POLICY_UPDATED": {
+          "description": "Published when a court's cancellation policy tiers change. Transaction Service uses this for refund calculations on future cancellations.",
+          "requirements": ["Req 12.7 — configurable cancellation policies"],
+          "payload": {
+            "type": "object",
+            "required": ["courtId", "courtOwnerId", "tiers"],
+            "properties": {
+              "courtId": { "type": "string", "format": "uuid" },
+              "courtOwnerId": { "type": "string", "format": "uuid" },
+              "tiers": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["thresholdHours", "refundPercent"],
+                  "properties": {
+                    "thresholdHours": { "type": "integer", "minimum": 0 },
+                    "refundPercent": { "type": "integer", "minimum": 0, "maximum": 100 }
+                  }
+                },
+                "description": "Ordered by descending thresholdHours."
+              }
+            }
+          }
+        },
+
+        "COURT_DELETED": {
+          "description": "Published when a court is deleted. Transaction Service cleans up any references.",
+          "requirements": ["Req 2.7 — court deletion"],
+          "payload": {
+            "type": "object",
+            "required": ["courtId", "courtOwnerId"],
+            "properties": {
+              "courtId": { "type": "string", "format": "uuid" },
+              "courtOwnerId": { "type": "string", "format": "uuid" }
+            }
+          }
+        }
+      }
+    },
+
+    "match-events": {
+      "description": "Open match lifecycle events published by Transaction Service. Platform Service consumes these to update map markers and cached match data. Partitioned by matchId.",
+      "partitionKey": "matchId",
+      "producer": "transaction-service",
+      "consumers": ["platform-service"],
+      "requirements": ["Req 24", "Req 19.24 — cache invalidation on match status changes"],
+      "events": {
+
+        "MATCH_CREATED": {
+          "description": "Published when a customer creates an open match. Platform Service adds it to map display and search results.",
+          "requirements": ["Req 24.1–24.2 — open match creation and map display"],
+          "payload": {
+            "type": "object",
+            "required": ["matchId", "bookingId", "courtId", "creatorUserId", "date", "startTime", "endTime", "courtType", "maxPlayers", "currentPlayers"],
+            "properties": {
+              "matchId": { "type": "string", "format": "uuid" },
+              "bookingId": { "type": "string", "format": "uuid" },
+              "courtId": { "type": "string", "format": "uuid" },
+              "creatorUserId": { "type": "string", "format": "uuid" },
+              "date": { "type": "string", "format": "date" },
+              "startTime": { "type": "string", "pattern": "^\\d{2}:\\d{2}$" },
+              "endTime": { "type": "string", "pattern": "^\\d{2}:\\d{2}$" },
+              "courtType": { "type": "string", "enum": ["TENNIS", "PADEL", "BASKETBALL", "FOOTBALL_5X5"] },
+              "locationType": { "type": "string", "enum": ["INDOOR", "OUTDOOR"] },
+              "maxPlayers": { "type": "integer" },
+              "currentPlayers": { "type": "integer" },
+              "creatorSkillLevel": { "type": "integer", "minimum": 1, "maximum": 7 },
+              "skillRangeMin": { "type": ["integer", "null"], "minimum": 1, "maximum": 7 },
+              "skillRangeMax": { "type": ["integer", "null"], "minimum": 1, "maximum": 7 },
+              "autoAccept": { "type": "boolean" },
+              "costPerPlayerCents": { "type": "integer" },
+              "latitude": { "type": "number", "format": "double" },
+              "longitude": { "type": "number", "format": "double" }
+            }
+          }
+        },
+
+        "MATCH_UPDATED": {
+          "description": "Published when match state changes (player joins/leaves, skill range updated). Platform Service updates cached match data.",
+          "requirements": ["Req 24.9–24.11 — player join/leave"],
+          "payload": {
+            "type": "object",
+            "required": ["matchId", "courtId", "updateType", "currentPlayers", "maxPlayers"],
+            "properties": {
+              "matchId": { "type": "string", "format": "uuid" },
+              "courtId": { "type": "string", "format": "uuid" },
+              "updateType": { "type": "string", "enum": ["PLAYER_JOINED", "PLAYER_LEFT", "SETTINGS_CHANGED"] },
+              "currentPlayers": { "type": "integer" },
+              "maxPlayers": { "type": "integer" },
+              "costPerPlayerCents": { "type": "integer" },
+              "affectedUserId": { "type": ["string", "null"], "format": "uuid", "description": "User who joined or left." }
+            }
+          }
+        },
+
+        "MATCH_CLOSED": {
+          "description": "Published when a match is closed (full, cancelled, or booking time passed). Platform Service removes it from map display.",
+          "requirements": ["Req 24.10 — auto-close when full"],
+          "payload": {
+            "type": "object",
+            "required": ["matchId", "courtId", "closeReason"],
+            "properties": {
+              "matchId": { "type": "string", "format": "uuid" },
+              "courtId": { "type": "string", "format": "uuid" },
+              "closeReason": { "type": "string", "enum": ["FULL", "CANCELLED", "EXPIRED", "BOOKING_CANCELLED"] }
+            }
+          }
+        }
+      }
+    },
+
+    "waitlist-events": {
+      "description": "Waitlist trigger events published by Transaction Service on booking cancellations. Consumed internally by Transaction Service's waitlist processor. Partitioned by courtId.",
+      "partitionKey": "courtId",
+      "producer": "transaction-service",
+      "consumers": ["transaction-service"],
+      "requirements": ["Req 26.4–26.9"],
+      "events": {
+
+        "WAITLIST_SLOT_FREED": {
+          "description": "Published when a booking is cancelled for a court+slot that has waitlist entries. Triggers FIFO notification to the first person in the queue.",
+          "requirements": ["Req 26.4 — notify first waitlisted customer on cancellation", "Req 26.6 — FIFO order"],
+          "payload": {
+            "type": "object",
+            "required": ["courtId", "date", "startTime", "endTime", "cancelledBookingId"],
+            "properties": {
+              "courtId": { "type": "string", "format": "uuid" },
+              "date": { "type": "string", "format": "date" },
+              "startTime": { "type": "string", "pattern": "^\\d{2}:\\d{2}$" },
+              "endTime": { "type": "string", "pattern": "^\\d{2}:\\d{2}$" },
+              "cancelledBookingId": { "type": "string", "format": "uuid" },
+              "freedByCourtOwner": { "type": "boolean", "description": "If true, court owner chose to release to waitlist (Req 26.5)." }
+            }
+          }
+        },
+
+        "WAITLIST_HOLD_EXPIRED": {
+          "description": "Published when a waitlisted customer's hold period expires without confirmation. Triggers notification to the next person in the queue.",
+          "requirements": ["Req 26.8 — move to next on hold expiry"],
+          "payload": {
+            "type": "object",
+            "required": ["courtId", "date", "startTime", "endTime", "expiredWaitlistEntryId", "expiredUserId"],
+            "properties": {
+              "courtId": { "type": "string", "format": "uuid" },
+              "date": { "type": "string", "format": "date" },
+              "startTime": { "type": "string", "pattern": "^\\d{2}:\\d{2}$" },
+              "endTime": { "type": "string", "pattern": "^\\d{2}:\\d{2}$" },
+              "expiredWaitlistEntryId": { "type": "string", "format": "uuid" },
+              "expiredUserId": { "type": "string", "format": "uuid" }
+            }
+          }
+        }
+      }
+    },
+
+    "analytics-events": {
+      "description": "Analytics and reporting events published by both services. Platform Service consumes these for dashboard aggregation and reporting. Partitioned by courtId for court-level aggregation.",
+      "partitionKey": "courtId",
+      "producer": "both",
+      "consumers": ["platform-service"],
+      "requirements": ["Req 15 — analytics and revenue tracking"],
+      "events": {
+
+        "BOOKING_ANALYTICS": {
+          "description": "Published after each booking lifecycle event for analytics aggregation. Platform Service uses these to compute dashboard metrics, occupancy rates, and peak hour analysis.",
+          "requirements": ["Req 15.1–15.3 — booking analytics"],
+          "payload": {
+            "type": "object",
+            "required": ["courtId", "courtOwnerId", "eventType", "date"],
+            "properties": {
+              "courtId": { "type": "string", "format": "uuid" },
+              "courtOwnerId": { "type": "string", "format": "uuid" },
+              "eventType": { "type": "string", "enum": ["BOOKED", "CANCELLED", "COMPLETED", "NO_SHOW"] },
+              "bookingId": { "type": "string", "format": "uuid" },
+              "bookingType": { "type": "string", "enum": ["CUSTOMER", "MANUAL"] },
+              "courtType": { "type": "string", "enum": ["TENNIS", "PADEL", "BASKETBALL", "FOOTBALL_5X5"] },
+              "date": { "type": "string", "format": "date" },
+              "startTime": { "type": "string", "pattern": "^\\d{2}:\\d{2}$" },
+              "dayOfWeek": { "type": "string", "enum": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"] },
+              "durationMinutes": { "type": "integer" },
+              "playerCount": { "type": ["integer", "null"] }
+            }
+          }
+        },
+
+        "REVENUE_ANALYTICS": {
+          "description": "Published after payment events for revenue tracking. Platform Service uses these for revenue dashboards and payout tracking.",
+          "requirements": ["Req 15.1–15.2 — revenue reporting"],
+          "payload": {
+            "type": "object",
+            "required": ["courtId", "courtOwnerId", "eventType", "amountCents"],
+            "properties": {
+              "courtId": { "type": "string", "format": "uuid" },
+              "courtOwnerId": { "type": "string", "format": "uuid" },
+              "eventType": { "type": "string", "enum": ["PAYMENT_CAPTURED", "REFUND_ISSUED", "DISPUTE_OPENED", "DISPUTE_CLOSED", "PAYOUT_COMPLETED"] },
+              "bookingId": { "type": "string", "format": "uuid" },
+              "amountCents": { "type": "integer", "description": "Gross amount in euro cents." },
+              "platformFeeCents": { "type": "integer" },
+              "courtOwnerNetCents": { "type": "integer" },
+              "refundAmountCents": { "type": ["integer", "null"], "description": "Non-null for REFUND_ISSUED events." },
+              "stripePaymentIntentId": { "type": ["string", "null"] },
+              "currency": { "type": "string", "default": "EUR" }
+            }
+          }
+        },
+
+        "PROMO_CODE_REDEEMED": {
+          "description": "Published when a promo code is used in a booking. Platform Service uses this for promo code usage analytics.",
+          "requirements": ["Req 27.6 — track promo code usage"],
+          "payload": {
+            "type": "object",
+            "required": ["promoCodeId", "promoCode", "courtId", "bookingId", "discountAmountCents"],
+            "properties": {
+              "promoCodeId": { "type": "string", "format": "uuid" },
+              "promoCode": { "type": "string" },
+              "courtId": { "type": "string", "format": "uuid" },
+              "courtOwnerId": { "type": "string", "format": "uuid" },
+              "bookingId": { "type": "string", "format": "uuid" },
+              "userId": { "type": "string", "format": "uuid" },
+              "discountType": { "type": "string", "enum": ["PERCENTAGE", "FIXED_AMOUNT"] },
+              "discountAmountCents": { "type": "integer", "description": "Actual discount applied in euro cents." },
+              "originalAmountCents": { "type": "integer" },
+              "finalAmountCents": { "type": "integer" }
+            }
+          }
+        }
+      }
+    }
+  }
+}
