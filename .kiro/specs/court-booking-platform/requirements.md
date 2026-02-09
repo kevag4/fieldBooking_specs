@@ -1058,6 +1058,37 @@ Every action performed by a court owner in the admin portal is recorded in an im
 - **Request_Debounce**: Client-side technique that delays sending a request until user input stabilizes (e.g., waiting 500ms after last map pan before searching)
 - **Partial_Failure**: API response where some parts succeed and others fail (e.g., `207 Multi-Status` for recurring bookings with some date conflicts)
 
+## Phase Roadmap
+
+### MVP (Phase 1)
+
+The MVP delivers the core booking platform: court owners register and manage courts, customers discover and book courts with payments via Stripe Connect, real-time availability, notifications, and the admin portal. Recurring bookings and configurable reminder rules are included in MVP.
+
+### Phase 2 (Post-MVP)
+
+The following features are fully specified in this document but excluded from MVP implementation. The architecture and data models should accommodate these features to avoid breaking changes when they are introduced.
+
+| # | Feature | Requirements | Rationale for Deferral |
+|---|---------|-------------|----------------------|
+| 1 | Split payments | Req 25 | Complex payment orchestration; core booking works without it |
+| 2 | Open match join/create | Req 24 | Matchmaking adds significant complexity; needs user base first |
+| 3 | Dynamic pricing configuration | Req 27.7–27.11 | Court owners can set a flat price for MVP; demand-based pricing needs usage data |
+| 4 | Promo code management | Req 27.1–27.6 | Marketing tool; not needed until customer acquisition phase |
+| 5 | Advertisement system | Req 23 | Already feature-flagged; needs user traffic to monetize |
+| 6 | Waitlist | Req 26 | Courts won't be fully booked in early days |
+| 7 | Court ownership transfer | Req 2.29–2.32 | Rare edge case for early platform |
+| 8 | Scheduled reports | Req 15.6–15.9 | Court owners can check dashboard manually |
+| 9 | Court ratings and reviews | Req 2.19–2.20 | Needs booking volume before reviews are meaningful |
+| 10 | 2FA / TOTP | Req 15a.14–15a.17 | OAuth provides sufficient security for MVP |
+| 11 | Keyboard shortcuts | Req 15a.21–15a.22 | Power-user polish; not essential for launch |
+| 12 | Court owner subscription billing | Req 9a | Free access for MVP to drive adoption; monetize later |
+
+**Phase 2 implementation notes:**
+- All Phase 2 requirements remain in this document as the specification for future work
+- Database schemas should include placeholder columns/tables where needed to avoid migrations that alter existing tables
+- API versioning (Req 29.13–29.14) supports adding Phase 2 endpoints without breaking existing clients
+- Kafka event contracts already include events for Phase 2 features (match-events, waitlist-events, analytics promo events) — consumers should ignore unknown event types gracefully
+
 ## Requirements
 
 ### Requirement 1: User Registration, Authentication, Authorization, and Account Management
@@ -1213,8 +1244,8 @@ Internal HTTP calls between Platform Service and Transaction Service (within the
 16. WHEN court owner verification is pending, THE Platform_Service SHALL allow court setup but restrict public visibility
 17. WHEN court type settings are changed, THE Platform_Service SHALL validate that existing future bookings are not affected or notify affected customers
 18. THE Platform_Service SHALL support court ownership transfer to another verified court owner account
-19. THE Platform_Service SHALL allow customers to rate and review courts after completed bookings
-20. THE Platform_Service SHALL display average ratings and recent reviews on court detail pages
+19. ⏳ **PHASE 2** — THE Platform_Service SHALL allow customers to rate and review courts after completed bookings
+20. ⏳ **PHASE 2** — THE Platform_Service SHALL display average ratings and recent reviews on court detail pages
 
 **Court Owner Verification Process:**
 21. WHEN a court owner submits verification documents (business name, tax ID, proof of court ownership/lease), THE Platform_Service SHALL create a verification request with status `PENDING_REVIEW` and notify PLATFORM_ADMIN users
@@ -1233,7 +1264,7 @@ Internal HTTP calls between Platform Service and Transaction Service (within the
 27. THE Platform_Service SHALL target a verification turnaround SLA of 48 hours from submission. WHEN a verification request has been pending for more than 48 hours, THE Platform_Service SHALL send a reminder notification to PLATFORM_ADMIN users
 28. WHEN a court owner updates business information that was part of the original verification (business name, tax ID, business address), THE Platform_Service SHALL flag the profile for re-verification review without revoking current verified status — courts remain visible during re-review
 
-**Court Ownership Transfer:**
+**Court Ownership Transfer:** ⏳ PHASE 2
 29. WHEN a court owner initiates a transfer of court ownership, THE Platform_Service SHALL require the target account to be a verified court owner with active Stripe Connect
    - **Initiate Input:** `POST /api/courts/{courtId}/transfer` with `{ targetOwnerEmail: string }`
    - **Initiate Output (success):** `200 OK` with `{ transferId: UUID, status: "PENDING_TARGET_CONFIRMATION", targetOwnerEmail: string(masked), expiresAt: ISO8601 }`
@@ -1388,7 +1419,7 @@ Internal HTTP calls between Platform Service and Transaction Service (within the
 13. WHEN a recurring manual booking conflicts with existing bookings on some dates, THE Transaction_Service SHALL inform the court owner of the conflicting dates and allow partial creation for available dates only
 14. THE Transaction_Service SHALL allow court owners to cancel individual instances of a recurring manual booking independently
 
-### Requirement 9a: Court Owner Subscription Billing
+### Requirement 9a: Court Owner Subscription Billing ⏳ PHASE 2
 
 **User Story:** As a court owner, I want to subscribe to a platform plan after my trial expires so that I can continue managing my courts and bookings through the admin portal.
 
@@ -1683,7 +1714,7 @@ For split-payment bookings, the same calculation applies to the total booking am
 4. WHEN pricing strategies are evaluated, THE Platform_Service SHALL show revenue impact of different pricing configurations
 5. WHERE data export is requested, THE Platform_Service SHALL generate reports in standard formats (CSV, PDF)
 
-**Scheduled Reports:**
+**Scheduled Reports:** ⏳ PHASE 2
 6. THE Platform_Service SHALL allow court owners to configure automated report delivery: weekly summary (every Monday) and/or monthly summary (1st of each month), sent via email
    - **Input:** `PUT /api/settings/scheduled-reports` with `{ weeklyEnabled: boolean, monthlyEnabled: boolean, courtIds: UUID[] | "ALL", recipientEmail?: string (defaults to account email) }`
    - **Output (success):** `200 OK` with saved configuration
@@ -1765,17 +1796,17 @@ For split-payment bookings, the same calculation applies to the total booking am
 **Security & Privacy:**
 12. THE Platform_Service SHALL display a list of active sessions for the court owner showing device type, browser, IP address (partially masked), and last activity timestamp
 13. THE Platform_Service SHALL allow court owners to revoke any active session individually, immediately invalidating that session's refresh token
-14. THE Platform_Service SHALL support optional two-factor authentication (TOTP) via authenticator apps (Google Authenticator, Authy) for court owner accounts
-15. WHEN 2FA is enabled and a court owner completes OAuth authentication, THE Platform_Service SHALL NOT issue JWT tokens immediately. Instead, THE Platform_Service SHALL redirect to a TOTP verification page where the court owner must enter a valid TOTP code. Only after successful TOTP verification SHALL the Platform_Service issue the access and refresh tokens. This applies to every new login session (not to token refresh).
-16. WHEN a court owner enables 2FA for the first time, THE Platform_Service SHALL display a QR code for the authenticator app and require the court owner to enter a valid TOTP code to confirm setup before activation
-17. THE Platform_Service SHALL provide backup recovery codes (one-time use, 10 codes) when 2FA is enabled, in case the court owner loses access to their authenticator app
+14. ⏳ **PHASE 2** — THE Platform_Service SHALL support optional two-factor authentication (TOTP) via authenticator apps (Google Authenticator, Authy) for court owner accounts
+15. ⏳ **PHASE 2** — WHEN 2FA is enabled and a court owner completes OAuth authentication, THE Platform_Service SHALL NOT issue JWT tokens immediately. Instead, THE Platform_Service SHALL redirect to a TOTP verification page where the court owner must enter a valid TOTP code. Only after successful TOTP verification SHALL the Platform_Service issue the access and refresh tokens. This applies to every new login session (not to token refresh).
+16. ⏳ **PHASE 2** — WHEN a court owner enables 2FA for the first time, THE Platform_Service SHALL display a QR code for the authenticator app and require the court owner to enter a valid TOTP code to confirm setup before activation
+17. ⏳ **PHASE 2** — THE Platform_Service SHALL provide backup recovery codes (one-time use, 10 codes) when 2FA is enabled, in case the court owner loses access to their authenticator app
 18. THE Platform_Service SHALL allow court owners to request a full data export (GDPR Article 20) containing all personal data, court data, booking history, and revenue data in JSON and CSV formats
 19. THE Platform_Service SHALL rate-limit data exports to a maximum of 10 per day per court owner and log each export request in the audit trail
 20. THE Platform_Service SHALL auto-logout court owner sessions after 30 minutes of inactivity, with a warning prompt at 25 minutes allowing session extension
 
-**Keyboard Shortcuts (Power-User):**
-21. THE admin web application SHALL support configurable keyboard shortcuts for frequent actions: new manual booking (`Ctrl+N`), search bookings (`Ctrl+K`), calendar view (`Ctrl+Shift+C`), pending bookings queue (`Ctrl+P`)
-22. THE admin web application SHALL display a keyboard shortcut reference accessible via `?` key or from the settings page
+**Keyboard Shortcuts (Power-User):** ⏳ PHASE 2
+21. ⏳ **PHASE 2** — THE admin web application SHALL support configurable keyboard shortcuts for frequent actions: new manual booking (`Ctrl+N`), search bookings (`Ctrl+K`), calendar view (`Ctrl+Shift+C`), pending bookings queue (`Ctrl+P`)
+22. ⏳ **PHASE 2** — THE admin web application SHALL display a keyboard shortcut reference accessible via `?` key or from the settings page
 
 ### Requirement 15b: Court Owner Configurable Reminder Notifications
 
@@ -2205,7 +2236,7 @@ For split-payment bookings, the same calculation applies to the total booking am
 53. THE production environment SHALL enforce strict security policies while dev/test environments MAY use relaxed policies for development convenience
 
 
-### Requirement 23: Optional Advertisement System with Feature Flags
+### Requirement 23: Optional Advertisement System with Feature Flags ⏳ PHASE 2
 
 **User Story:** As a platform owner, I want the ability to enable advertisements in the future with minimal code changes, so that I can monetize the platform when ready without disrupting the user experience.
 
@@ -2259,7 +2290,7 @@ For split-payment bookings, the same calculation applies to the total booking am
 33. WHEN checking advertisement display eligibility, THE system SHALL consider user subscription status for future extensibility
 
 
-### Requirement 24: Player Matchmaking and Open Matches
+### Requirement 24: Player Matchmaking and Open Matches ⏳ PHASE 2
 
 **User Story:** As a customer, I want to create open matches seeking other players or join existing matches near me, so that I can find playing partners at my skill level without having to organize games manually.
 
@@ -2284,7 +2315,7 @@ For split-payment bookings, the same calculation applies to the total booking am
 13. WHEN a customer has a skill level set, THE Platform_Service SHALL provide personalized match recommendations based on skill compatibility and location
 14. THE Platform_Service SHALL support in-app messaging between players in the same open match for coordination
 
-### Requirement 25: Split Payment Between Players
+### Requirement 25: Split Payment Between Players ⏳ PHASE 2
 
 **User Story:** As a customer booking a court with friends, I want to split the payment among all players, so that each person pays their fair share without manual coordination.
 
@@ -2316,7 +2347,7 @@ This avoids complex authorization hold management and keeps the booking confirme
 13. WHEN a co-player disputes their share payment via Stripe, THE Transaction_Service SHALL handle the dispute independently without affecting other players' payments or the booking status. The disputed amount is between the co-player and the platform — the booking creator is not involved
 14. THE Transaction_Service SHALL track split payment status per player: INVITED, PAYMENT_PENDING, PAID, EXPIRED, REFUNDED, DISPUTED
 
-### Requirement 26: Waitlist for Fully Booked Courts
+### Requirement 26: Waitlist for Fully Booked Courts ⏳ PHASE 2
 
 **User Story:** As a customer, I want to join a waitlist when my preferred court and time slot is fully booked, so that I can automatically get the booking if a cancellation occurs.
 
@@ -2341,7 +2372,7 @@ This avoids complex authorization hold management and keeps the booking confirme
 12. WHEN a customer successfully books through a waitlist, THE Transaction_Service SHALL automatically remove them from other waitlists for the same time slot
 13. THE Transaction_Service SHALL automatically expire waitlist entries after the time slot has passed
 
-### Requirement 27: Promotional Codes and Dynamic Pricing
+### Requirement 27: Promotional Codes and Dynamic Pricing ⏳ PHASE 2
 
 **User Story:** As a court owner, I want to create promotional codes and configure dynamic pricing based on demand, so that I can attract more customers during off-peak hours and reward loyal players.
 
