@@ -343,6 +343,35 @@ Per-court cancellation policy tiers (Req 12.7).
 
 ---
 
+### ⏳ `promo_code_redemptions` — Phase 2
+
+Tracks promo code usage per booking for idempotency and per-user limit enforcement.
+Called by Transaction Service via internal API when booking is confirmed/cancelled.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | UUID | PK, DEFAULT gen_random_uuid() | |
+| promo_code_id | UUID | NOT NULL, FK → promo_codes(id) | |
+| booking_id | UUID | NOT NULL | FK conceptual → transaction.bookings(id) |
+| user_id | UUID | NOT NULL, FK → users(id) | User who redeemed |
+| discount_amount_cents | INTEGER | NOT NULL | Discount applied |
+| status | VARCHAR(20) | NOT NULL DEFAULT 'ACTIVE', CHECK IN ('ACTIVE','ROLLED_BACK') | |
+| rolled_back_at | TIMESTAMPTZ | | When rollback occurred |
+| rollback_reason | VARCHAR(30) | CHECK IN ('BOOKING_CANCELLED','BOOKING_REFUNDED','PAYMENT_FAILED') | |
+| created_at | TIMESTAMPTZ | NOT NULL DEFAULT NOW() | |
+
+**Indexes:**
+- `uq_promo_redemption_booking` — UNIQUE on `(promo_code_id, booking_id)` — idempotency
+- `idx_promo_redemptions_user` — on `(promo_code_id, user_id)` — per-user limit queries
+- `idx_promo_redemptions_status` — on `(promo_code_id, status)` WHERE `status = 'ACTIVE'`
+
+**Notes:**
+- The UNIQUE constraint on `(promo_code_id, booking_id)` ensures idempotent redemption/rollback
+- Per-user usage count = `SELECT COUNT(*) FROM promo_code_redemptions WHERE promo_code_id = ? AND user_id = ? AND status = 'ACTIVE'`
+- `current_uses` in `promo_codes` table is updated atomically via trigger or application logic
+
+---
+
 ### `translations`
 
 Static UI translations and system messages.

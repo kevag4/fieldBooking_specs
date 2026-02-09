@@ -2713,53 +2713,60 @@ paths:
       description: |
         Internal endpoint called by Transaction Service to validate that a court slot is available
         for booking. Checks availability windows, overrides, and existing booking conflicts.
-        Not exposed through NGINX Ingress — only reachable within the Kubernetes cluster.
-        Auth: X-Internal-Api-Key header (dev/test), mTLS via Istio (staging/prod).
+        
+        **Not exposed through NGINX Ingress** — only reachable within the Kubernetes cluster.
+        
+        **Authentication:**
+        - dev/test: X-Internal-Api-Key header (shared secret via INTERNAL_API_KEY env var)
+        - staging/prod: mTLS via Istio (no app-level auth needed)
       operationId: validateSlot
-      security: []
+      security:
+        - InternalApiKey: []
       parameters:
         - $ref: '#/components/parameters/CourtId'
+        - $ref: '#/components/parameters/InternalApiKey'
         - name: date
           in: query
           required: true
           schema:
             type: string
             format: date
+          example: '2026-02-15'
         - name: startTime
           in: query
           required: true
           schema:
             type: string
             pattern: '^\d{2}:\d{2}$'
+          description: Start time in HH:mm format (court's local timezone)
+          example: '10:00'
         - name: endTime
           in: query
           required: true
           schema:
             type: string
             pattern: '^\d{2}:\d{2}$'
+          description: End time in HH:mm format (court's local timezone)
+          example: '11:00'
       responses:
         '200':
           description: Slot validation result
           content:
             application/json:
               schema:
-                type: object
-                required: [available]
-                properties:
-                  available:
-                    type: boolean
-                    description: Whether the slot is available for booking
-                  reason:
-                    type: string
-                    nullable: true
-                    description: Reason if not available (e.g., OUTSIDE_AVAILABILITY_WINDOW, OVERRIDE_BLOCKED, SLOT_CONFLICT, COURT_NOT_VISIBLE)
-                  conflictingBookingId:
-                    type: string
-                    format: uuid
-                    nullable: true
-                    description: ID of the conflicting booking, if any
+                $ref: '#/components/schemas/SlotValidationResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: Invalid or missing X-Internal-Api-Key (dev/test only)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Court not found
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
 
   /internal/courts/{courtId}/calculate-price:
     get:
@@ -2767,82 +2774,306 @@ paths:
       summary: Calculate booking price
       description: |
         Internal endpoint called by Transaction Service to calculate the price for a booking slot.
-        Applies base price, pricing rules (peak/off-peak multipliers), and special date pricing.
-        Not exposed through NGINX Ingress.
+        Applies base price, pricing rules (peak/off-peak multipliers), special date pricing, and promo codes.
+        
+        **Not exposed through NGINX Ingress** — only reachable within the Kubernetes cluster.
+        
+        **Authentication:**
+        - dev/test: X-Internal-Api-Key header (shared secret via INTERNAL_API_KEY env var)
+        - staging/prod: mTLS via Istio (no app-level auth needed)
+        
+        **Pricing Calculation Order:**
+        1. Start with court's base price (basePriceCents)
+        2. Apply pricing rule multiplier if time slot matches a rule (peak/off-peak)
+        3. Apply special date multiplier if date matches (holidays, events)
+        4. Calculate subtotal (basePriceCents × multiplier × specialDateMultiplier)
+        5. Apply promo code discount if valid
+        6. Return finalPriceCents
       operationId: calculatePrice
-      security: []
+      security:
+        - InternalApiKey: []
       parameters:
         - $ref: '#/components/parameters/CourtId'
+        - $ref: '#/components/parameters/InternalApiKey'
         - name: date
           in: query
           required: true
           schema:
             type: string
             format: date
+          example: '2026-02-15'
         - name: startTime
           in: query
           required: true
           schema:
             type: string
             pattern: '^\d{2}:\d{2}$'
+          description: Start time in HH:mm format (court's local timezone)
+          example: '10:00'
         - name: endTime
           in: query
           required: true
           schema:
             type: string
             pattern: '^\d{2}:\d{2}$'
+          description: End time in HH:mm format (court's local timezone)
+          example: '11:00'
         - name: promoCode
           in: query
           schema:
             type: string
+            maxLength: 20
           description: Optional promo code to validate and apply
+          example: 'SUMMER20'
+        - name: courtType
+          in: query
+          schema:
+            type: string
+            enum: [TENNIS, PADEL, BASKETBALL, FOOTBALL_5X5]
+          description: Court type for promo code validation (required if promoCode is provided and has court type restrictions)
       responses:
         '200':
           description: Price calculation result
           content:
             application/json:
               schema:
-                type: object
-                required: [basePriceCents, finalPriceCents, multiplier]
-                properties:
-                  basePriceCents:
-                    type: integer
-                    description: Court's base price in euro cents
-                  multiplier:
-                    type: number
-                    format: double
-                    description: Applied pricing rule multiplier (1.0 if no rule matches)
-                  multiplierLabel:
-                    type: string
-                    nullable: true
-                    description: Label of the applied pricing rule (e.g., 'Peak', 'Off-Peak')
-                  specialDateMultiplier:
-                    type: number
-                    format: double
-                    nullable: true
-                    description: Special date pricing multiplier, if applicable
-                  specialDateLabel:
-                    type: string
-                    nullable: true
-                  subtotalCents:
-                    type: integer
-                    description: Price after multipliers, before promo discount
-                  promoDiscountCents:
-                    type: integer
-                    description: Promo code discount amount (0 if no promo)
-                  promoCodeValid:
-                    type: boolean
-                    nullable: true
-                    description: Whether the provided promo code is valid (null if no promo code provided)
-                  promoCodeError:
-                    type: string
-                    nullable: true
-                    description: Error reason if promo code is invalid
-                  finalPriceCents:
-                    type: integer
-                    description: Final price after all multipliers and discounts
+                $ref: '#/components/schemas/PriceCalculationResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: Invalid or missing X-Internal-Api-Key (dev/test only)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Court not found
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /internal/promo-codes/validate:
+    post:
+      tags: [Internal]
+      summary: Validate promo code for booking
+      description: |
+        Internal endpoint called by Transaction Service to validate a promo code before booking.
+        Performs comprehensive validation including:
+        - Code existence and active status
+        - Date validity (validFrom/validUntil)
+        - Usage limits (global max_uses and per-user max_uses_per_user)
+        - Court type restrictions
+        - Minimum booking amount requirements
+        
+        **Not exposed through NGINX Ingress** — only reachable within the Kubernetes cluster.
+        
+        **Authentication:**
+        - dev/test: X-Internal-Api-Key header
+        - staging/prod: mTLS via Istio
+        
+        **Note:** This endpoint does NOT increment usage count. Use `/internal/promo-codes/redeem` 
+        after booking is confirmed.
+      operationId: validatePromoCode
+      security:
+        - InternalApiKey: []
+      parameters:
+        - $ref: '#/components/parameters/InternalApiKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PromoCodeValidationRequest'
+      responses:
+        '200':
+          description: Promo code validation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromoCodeValidationResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: Invalid or missing X-Internal-Api-Key (dev/test only)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /internal/promo-codes/redeem:
+    post:
+      tags: [Internal]
+      summary: Redeem promo code (increment usage)
+      description: |
+        Internal endpoint called by Transaction Service when a booking with a promo code is confirmed.
+        Atomically increments the promo code's `current_uses` counter.
+        
+        **Idempotency:** Uses bookingId as idempotency key. Calling multiple times with the same
+        bookingId will only increment usage once.
+        
+        **Not exposed through NGINX Ingress** — only reachable within the Kubernetes cluster.
+        
+        **Authentication:**
+        - dev/test: X-Internal-Api-Key header
+        - staging/prod: mTLS via Istio
+        
+        **When to call:** After booking status changes to CONFIRMED and payment is captured.
+      operationId: redeemPromoCode
+      security:
+        - InternalApiKey: []
+      parameters:
+        - $ref: '#/components/parameters/InternalApiKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PromoCodeRedemptionRequest'
+      responses:
+        '200':
+          description: Promo code redeemed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromoCodeRedemptionResponse'
+        '400':
+          description: |
+            Invalid request. Error codes:
+            - `PROMO_CODE_NOT_FOUND` — Code doesn't exist
+            - `PROMO_CODE_INACTIVE` — Code is deactivated
+            - `PROMO_CODE_EXPIRED` — Code has expired
+            - `PROMO_CODE_USAGE_LIMIT_REACHED` — Global usage limit reached
+            - `PROMO_CODE_USER_LIMIT_REACHED` — Per-user usage limit reached
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Invalid or missing X-Internal-Api-Key (dev/test only)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Promo code already redeemed for this booking (idempotency check)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /internal/promo-codes/rollback:
+    post:
+      tags: [Internal]
+      summary: Rollback promo code redemption (decrement usage)
+      description: |
+        Internal endpoint called by Transaction Service when a booking with a promo code is 
+        cancelled or refunded. Atomically decrements the promo code's `current_uses` counter.
+        
+        **Idempotency:** Uses bookingId as idempotency key. Calling multiple times with the same
+        bookingId will only decrement usage once.
+        
+        **Not exposed through NGINX Ingress** — only reachable within the Kubernetes cluster.
+        
+        **Authentication:**
+        - dev/test: X-Internal-Api-Key header
+        - staging/prod: mTLS via Istio
+        
+        **When to call:** After booking is cancelled and refund is processed.
+      operationId: rollbackPromoCode
+      security:
+        - InternalApiKey: []
+      parameters:
+        - $ref: '#/components/parameters/InternalApiKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PromoCodeRollbackRequest'
+      responses:
+        '200':
+          description: Promo code usage rolled back successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromoCodeRollbackResponse'
+        '400':
+          description: |
+            Invalid request. Error codes:
+            - `PROMO_CODE_NOT_FOUND` — Code doesn't exist
+            - `BOOKING_NOT_FOUND` — No redemption record for this booking
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Invalid or missing X-Internal-Api-Key (dev/test only)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /internal/users/{userId}/stripe-connect-status:
+    get:
+      tags: [Internal]
+      summary: Get court owner's Stripe Connect status
+      description: |
+        Internal endpoint called by Transaction Service to fetch fresh Stripe Connect status
+        before critical payment operations (capture, transfer). This ensures we never attempt
+        to capture payments to a RESTRICTED or DISABLED account.
+        
+        **Not exposed through NGINX Ingress** — only reachable within the Kubernetes cluster.
+        
+        **Authentication:**
+        - dev/test: X-Internal-Api-Key header
+        - staging/prod: mTLS via Istio
+        
+        **When to call:**
+        - Before capturing a PaymentIntent (booking confirmation)
+        - Before creating a Stripe Transfer to court owner
+        - When cached status is stale (>5 minutes old)
+        
+        **Why not just use the cross-schema view?**
+        The view provides eventually-consistent data. For payment operations, we need the
+        authoritative status from Platform Service which may have just processed a Stripe webhook.
+      operationId: getStripeConnectStatus
+      security:
+        - InternalApiKey: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Court owner's user ID
+        - $ref: '#/components/parameters/InternalApiKey'
+      responses:
+        '200':
+          description: Stripe Connect status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StripeConnectStatusResponse'
+        '401':
+          description: Invalid or missing X-Internal-Api-Key (dev/test only)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: User not found or not a court owner
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2855,6 +3086,15 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: RS256 JWT access token. See Requirement 1 for claims structure.
+
+    InternalApiKey:
+      type: apiKey
+      in: header
+      name: X-Internal-Api-Key
+      description: |
+        Internal service-to-service authentication for dev/test environments.
+        In staging/prod, mTLS via Istio handles authentication instead — this header is ignored.
+        The key is configured via INTERNAL_API_KEY environment variable.
 
   parameters:
     CourtId:
@@ -2885,6 +3125,17 @@ components:
         operations (court creation, rating submission, support ticket creation). The server
         will return the same response for duplicate requests with the same idempotency key
         within 24 hours.
+
+    InternalApiKey:
+      name: X-Internal-Api-Key
+      in: header
+      required: false
+      schema:
+        type: string
+      description: |
+        Internal service-to-service authentication key for dev/test environments.
+        Required when calling /internal/* endpoints in dev/test.
+        In staging/prod, mTLS via Istio handles authentication — this header is ignored.
 
   responses:
     BadRequest:
@@ -2924,6 +3175,13 @@ components:
           schema:
             type: integer
           description: Number of seconds to wait before retrying
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    InternalServerError:
+      description: Internal server error
       content:
         application/json:
           schema:
@@ -3668,6 +3926,335 @@ components:
           type: integer
           minimum: 0
           maximum: 100
+
+    # ─── Internal API Schemas ───────────────────────────────────────────────
+    SlotValidationResult:
+      type: object
+      description: Result of court slot availability validation (internal API)
+      required: [available]
+      properties:
+        available:
+          type: boolean
+          description: Whether the slot is available for booking
+        reason:
+          type: string
+          nullable: true
+          enum:
+            - OUTSIDE_AVAILABILITY_WINDOW
+            - OVERRIDE_BLOCKED
+            - SLOT_CONFLICT
+            - COURT_NOT_VISIBLE
+            - COURT_OWNER_NOT_VERIFIED
+            - SLOT_DURATION_MISMATCH
+          description: |
+            Reason if not available:
+            - OUTSIDE_AVAILABILITY_WINDOW: Requested time is outside court's operating hours
+            - OVERRIDE_BLOCKED: Date/time blocked by availability override (maintenance, holiday, etc.)
+            - SLOT_CONFLICT: Another booking exists for this time slot
+            - COURT_NOT_VISIBLE: Court is not publicly visible
+            - COURT_OWNER_NOT_VERIFIED: Court owner hasn't completed verification
+            - SLOT_DURATION_MISMATCH: Requested duration doesn't match court's slot duration
+        conflictingBookingId:
+          type: string
+          format: uuid
+          nullable: true
+          description: ID of the conflicting booking (only present when reason is SLOT_CONFLICT)
+        overrideReason:
+          type: string
+          nullable: true
+          description: Reason for the availability override (only present when reason is OVERRIDE_BLOCKED)
+
+    PriceCalculationResult:
+      type: object
+      description: Result of booking price calculation (internal API)
+      required: [basePriceCents, finalPriceCents, multiplier, subtotalCents, promoDiscountCents]
+      properties:
+        basePriceCents:
+          type: integer
+          minimum: 0
+          description: Court's base price in euro cents
+          example: 2000
+        multiplier:
+          type: number
+          format: double
+          minimum: 0
+          description: Applied pricing rule multiplier (1.0 if no rule matches)
+          example: 1.5
+        multiplierLabel:
+          type: string
+          nullable: true
+          description: Label of the applied pricing rule (e.g., 'Peak', 'Off-Peak')
+          example: 'Peak Hours'
+        specialDateMultiplier:
+          type: number
+          format: double
+          nullable: true
+          minimum: 0
+          description: Special date pricing multiplier, if applicable
+          example: 1.2
+        specialDateLabel:
+          type: string
+          nullable: true
+          description: Label of the special date (e.g., 'Christmas', 'National Holiday')
+          example: 'Easter Sunday'
+        subtotalCents:
+          type: integer
+          minimum: 0
+          description: Price after multipliers, before promo discount (basePriceCents × multiplier × specialDateMultiplier)
+          example: 3600
+        promoDiscountCents:
+          type: integer
+          minimum: 0
+          description: Promo code discount amount in cents (0 if no promo or invalid promo)
+          example: 500
+        promoCodeValid:
+          type: boolean
+          nullable: true
+          description: Whether the provided promo code is valid (null if no promo code provided)
+        promoCodeError:
+          type: string
+          nullable: true
+          enum:
+            - PROMO_NOT_FOUND
+            - PROMO_EXPIRED
+            - PROMO_NOT_YET_VALID
+            - PROMO_USAGE_LIMIT_REACHED
+            - PROMO_WRONG_COURT_TYPE
+            - PROMO_WRONG_SCOPE
+          description: |
+            Error reason if promo code is invalid:
+            - PROMO_NOT_FOUND: Promo code doesn't exist
+            - PROMO_EXPIRED: Promo code has expired (past validUntil)
+            - PROMO_NOT_YET_VALID: Promo code not yet active (before validFrom)
+            - PROMO_USAGE_LIMIT_REACHED: Promo code has reached maxUsages
+            - PROMO_WRONG_COURT_TYPE: Promo code not applicable to this court type
+            - PROMO_WRONG_SCOPE: Promo code scope doesn't match (court owner vs platform)
+        finalPriceCents:
+          type: integer
+          minimum: 0
+          description: Final price after all multipliers and discounts (subtotalCents - promoDiscountCents)
+          example: 3100
+
+    # ─── Internal Promo Code Schemas ────────────────────────────────────────
+    PromoCodeValidationRequest:
+      type: object
+      description: Request to validate a promo code for booking
+      required: [code, userId, courtId, bookingAmountCents]
+      properties:
+        code:
+          type: string
+          maxLength: 50
+          description: The promo code to validate
+          example: 'SUMMER20'
+        userId:
+          type: string
+          format: uuid
+          description: User attempting to use the promo code (for per-user limit check)
+        courtId:
+          type: string
+          format: uuid
+          description: Court being booked (for court-specific promo validation)
+        courtOwnerId:
+          type: string
+          format: uuid
+          description: Court owner ID (for scope validation)
+        courtType:
+          type: string
+          enum: [TENNIS, PADEL, BASKETBALL, FOOTBALL_5X5]
+          description: Court type (for court type restrictions)
+        bookingAmountCents:
+          type: integer
+          minimum: 0
+          description: Booking amount before discount (for minimum amount validation)
+          example: 2500
+        bookingDate:
+          type: string
+          format: date
+          description: Booking date (for date-based promo validation)
+
+    PromoCodeValidationResponse:
+      type: object
+      description: Result of promo code validation
+      required: [valid]
+      properties:
+        valid:
+          type: boolean
+          description: Whether the promo code is valid for this booking
+        promoCodeId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Promo code ID (for storing in booking record)
+        discountType:
+          type: string
+          enum: [PERCENTAGE, FIXED_AMOUNT]
+          nullable: true
+          description: Type of discount
+        discountValue:
+          type: integer
+          nullable: true
+          description: Discount value (percentage 0-100 or fixed amount in cents)
+        discountAmountCents:
+          type: integer
+          nullable: true
+          description: Calculated discount amount in cents for this booking
+          example: 500
+        maxDiscountCents:
+          type: integer
+          nullable: true
+          description: Maximum discount cap (for percentage discounts)
+        errorCode:
+          type: string
+          nullable: true
+          enum:
+            - PROMO_NOT_FOUND
+            - PROMO_INACTIVE
+            - PROMO_EXPIRED
+            - PROMO_NOT_YET_VALID
+            - PROMO_USAGE_LIMIT_REACHED
+            - PROMO_USER_LIMIT_REACHED
+            - PROMO_WRONG_COURT_TYPE
+            - PROMO_WRONG_COURT
+            - PROMO_MIN_AMOUNT_NOT_MET
+          description: |
+            Error code if validation failed:
+            - PROMO_NOT_FOUND: Code doesn't exist
+            - PROMO_INACTIVE: Code is deactivated
+            - PROMO_EXPIRED: Code has expired (past validUntil)
+            - PROMO_NOT_YET_VALID: Code not yet active (before validFrom)
+            - PROMO_USAGE_LIMIT_REACHED: Global max_uses reached
+            - PROMO_USER_LIMIT_REACHED: Per-user max_uses_per_user reached
+            - PROMO_WRONG_COURT_TYPE: Code not applicable to this court type
+            - PROMO_WRONG_COURT: Code not applicable to this specific court
+            - PROMO_MIN_AMOUNT_NOT_MET: Booking amount below min_booking_cents
+        errorMessage:
+          type: string
+          nullable: true
+          description: Human-readable error message (for logging/debugging)
+        remainingUses:
+          type: integer
+          nullable: true
+          description: Remaining global uses (null if unlimited)
+        userRemainingUses:
+          type: integer
+          nullable: true
+          description: Remaining uses for this user
+
+    PromoCodeRedemptionRequest:
+      type: object
+      description: Request to redeem (increment usage of) a promo code
+      required: [promoCodeId, bookingId, userId, discountAmountCents]
+      properties:
+        promoCodeId:
+          type: string
+          format: uuid
+          description: Promo code ID (from validation response)
+        bookingId:
+          type: string
+          format: uuid
+          description: Booking ID (used as idempotency key)
+        userId:
+          type: string
+          format: uuid
+          description: User who used the promo code
+        discountAmountCents:
+          type: integer
+          minimum: 0
+          description: Discount amount applied (for audit trail)
+
+    PromoCodeRedemptionResponse:
+      type: object
+      description: Result of promo code redemption
+      required: [success, currentUses]
+      properties:
+        success:
+          type: boolean
+          description: Whether redemption was successful
+        currentUses:
+          type: integer
+          description: Updated usage count after redemption
+        alreadyRedeemed:
+          type: boolean
+          description: True if this bookingId already redeemed this promo (idempotent response)
+
+    PromoCodeRollbackRequest:
+      type: object
+      description: Request to rollback (decrement usage of) a promo code
+      required: [promoCodeId, bookingId]
+      properties:
+        promoCodeId:
+          type: string
+          format: uuid
+          description: Promo code ID
+        bookingId:
+          type: string
+          format: uuid
+          description: Booking ID (used as idempotency key)
+        reason:
+          type: string
+          enum: [BOOKING_CANCELLED, BOOKING_REFUNDED, PAYMENT_FAILED]
+          description: Reason for rollback (for audit trail)
+
+    PromoCodeRollbackResponse:
+      type: object
+      description: Result of promo code rollback
+      required: [success, currentUses]
+      properties:
+        success:
+          type: boolean
+          description: Whether rollback was successful
+        currentUses:
+          type: integer
+          description: Updated usage count after rollback
+        alreadyRolledBack:
+          type: boolean
+          description: True if this bookingId was already rolled back (idempotent response)
+
+    StripeConnectStatusResponse:
+      type: object
+      description: Court owner's Stripe Connect account status (internal API)
+      required: [userId, status, canReceivePayments]
+      properties:
+        userId:
+          type: string
+          format: uuid
+          description: Court owner's user ID
+        stripeConnectAccountId:
+          type: string
+          nullable: true
+          description: Stripe Connect account ID (acct_xxx). Null if NOT_STARTED.
+        status:
+          type: string
+          enum: [NOT_STARTED, PENDING, ACTIVE, RESTRICTED, DISABLED]
+          description: Current Stripe Connect status
+        canReceivePayments:
+          type: boolean
+          description: |
+            Whether payments can be captured/transferred to this account.
+            True only when status is ACTIVE.
+            Transaction Service should check this before payment capture.
+        requiresAction:
+          type: boolean
+          description: True if Stripe requires additional information from the court owner
+        restrictionReason:
+          type: string
+          nullable: true
+          description: Reason for restriction/disabling (from Stripe), if applicable
+        payoutSchedule:
+          type: string
+          enum: [DAILY, WEEKLY, MONTHLY]
+          nullable: true
+          description: Configured payout schedule
+        lastWebhookAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Timestamp of last Stripe webhook processed for this account
+        statusChangedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the status last changed
 
     # ─── Promo Codes ────────────────────────────────────────────────────────
     PromoCode:

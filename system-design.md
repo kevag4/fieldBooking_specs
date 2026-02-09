@@ -157,7 +157,7 @@ Admin Web  ──REST──► NGINX ──► Platform Service
                            ──► Transaction Service
 
 Transaction Service ──internal HTTP──► Platform Service
-  (court validation, pricing calculation)
+  (court validation, pricing calculation, promo codes, Stripe Connect status)
   Auth: mTLS via Istio (staging/prod), API key (dev/test)
 ```
 
@@ -169,6 +169,22 @@ Transaction Service calls Platform Service for operations that involve business 
 |--------|--------|------|-----------|
 | Court availability validation | GET | `/internal/courts/{courtId}/validate-slot?date=&startTime=&endTime=` | Involves availability windows, overrides, and existing booking conflict checks |
 | Pricing calculation | GET | `/internal/courts/{courtId}/calculate-price?date=&startTime=&endTime=` | Involves base price, pricing rules, special date pricing, and promo validation |
+| Promo code validation | POST | `/internal/promo-codes/validate` | Validates promo code eligibility (limits, dates, court type) without incrementing usage |
+| Promo code redemption | POST | `/internal/promo-codes/redeem` | Increments usage count when booking is confirmed (idempotent by bookingId) |
+| Promo code rollback | POST | `/internal/promo-codes/rollback` | Decrements usage count when booking is cancelled/refunded (idempotent by bookingId) |
+| Stripe Connect status | GET | `/internal/users/{userId}/stripe-connect-status` | Fresh status check before payment capture (prevents capturing to disabled accounts) |
+
+**Promo Code Flow:**
+1. Customer enters promo code → Transaction Service calls `/internal/promo-codes/validate`
+2. Validation returns discount details or error → shown in booking preview
+3. Booking confirmed + payment captured → Transaction Service calls `/internal/promo-codes/redeem`
+4. Booking cancelled/refunded → Transaction Service calls `/internal/promo-codes/rollback`
+
+**Stripe Connect Status Sync:**
+Platform Service owns `users.stripe_connect_status` and receives Stripe webhooks. Transaction Service needs this for payment processing:
+1. **Kafka event** (`STRIPE_CONNECT_STATUS_CHANGED`) — Platform Service publishes when status changes via webhook. Transaction Service updates its cache.
+2. **Fresh fetch before capture** — Transaction Service calls `/internal/users/{userId}/stripe-connect-status` before capturing payments to ensure we never capture to a RESTRICTED/DISABLED account.
+3. **Cross-schema view** (`v_user_basic`) — Used for display purposes and non-critical reads.
 
 Simple read-only lookups use **cross-schema database views** instead of HTTP calls (see [Data Ownership](#5-data-ownership)):
 
@@ -217,7 +233,7 @@ Both services publish to `notification-events`: Transaction Service for booking/
 |-------|--------------|----------|-------------|--------|---------|
 | `booking-events` | `courtId` | Transaction | Platform | BOOKING_CREATED, BOOKING_CONFIRMED, BOOKING_CANCELLED, BOOKING_MODIFIED, BOOKING_COMPLETED, SLOT_HELD, SLOT_RELEASED | Availability cache invalidation, WebSocket broadcasts |
 | `notification-events` | `userId` | Both | Transaction | NOTIFICATION_REQUESTED | Notification dispatch routing (FCM, WebSocket, SendGrid, email) |
-| `court-update-events` | `courtId` | Platform | Transaction | COURT_UPDATED, PRICING_UPDATED, AVAILABILITY_UPDATED, CANCELLATION_POLICY_UPDATED, COURT_DELETED | Pricing/availability/policy sync to Transaction Service |
+| `court-update-events` | `courtId` | Platform | Transaction | COURT_UPDATED, PRICING_UPDATED, AVAILABILITY_UPDATED, CANCELLATION_POLICY_UPDATED, COURT_DELETED, STRIPE_CONNECT_STATUS_CHANGED | Pricing/availability/policy sync, Stripe Connect status for payment eligibility |
 | `match-events` | `matchId` | Transaction | Platform | MATCH_CREATED, MATCH_UPDATED, MATCH_CLOSED | Open match map display and search index updates |
 | `waitlist-events` | `courtId` | Transaction | Transaction | WAITLIST_SLOT_FREED, WAITLIST_HOLD_EXPIRED | FIFO waitlist processing on cancellations |
 | `analytics-events` | `courtId` | Both | Platform | BOOKING_ANALYTICS, REVENUE_ANALYTICS, PROMO_CODE_REDEEMED | Dashboard metrics, revenue tracking, promo code usage |

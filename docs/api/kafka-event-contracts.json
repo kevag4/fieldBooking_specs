@@ -289,11 +289,11 @@
     },
 
     "court-update-events": {
-      "description": "Court configuration changes published by Platform Service. Transaction Service consumes these to update its local pricing cache, validate booking constraints, and adjust scheduled jobs. Partitioned by courtId.",
+      "description": "Court and court owner configuration changes published by Platform Service. Transaction Service consumes these to update its local pricing cache, validate booking constraints, adjust scheduled jobs, and manage payment eligibility. Includes STRIPE_CONNECT_STATUS_CHANGED for payment processing decisions. Partitioned by courtId (except STRIPE_CONNECT_STATUS_CHANGED which uses courtOwnerId).",
       "partitionKey": "courtId",
       "producer": "platform-service",
       "consumers": ["transaction-service"],
-      "requirements": ["Req 2.8 — propagate court updates", "Req 2.17 — notify affected bookings on type changes", "Req 27.7–27.8 — dynamic pricing"],
+      "requirements": ["Req 2.8 — propagate court updates", "Req 2.17 — notify affected bookings on type changes", "Req 27.7–27.8 — dynamic pricing", "Req 9.5 — Stripe Connect status sync"],
       "events": {
 
         "COURT_UPDATED": {
@@ -418,6 +418,42 @@
             "properties": {
               "courtId": { "type": "string", "format": "uuid" },
               "courtOwnerId": { "type": "string", "format": "uuid" }
+            }
+          }
+        },
+
+        "STRIPE_CONNECT_STATUS_CHANGED": {
+          "description": "Published when a court owner's Stripe Connect account status changes (via Stripe webhook). Transaction Service uses this to update its cache and block/allow payment captures. Critical for preventing payment failures when an account becomes RESTRICTED or DISABLED.",
+          "requirements": ["Req 9.5 — Stripe Connect status sync", "Req 11.3 — block payments for disabled accounts"],
+          "payload": {
+            "type": "object",
+            "required": ["courtOwnerId", "previousStatus", "newStatus"],
+            "properties": {
+              "courtOwnerId": { "type": "string", "format": "uuid", "description": "Court owner whose Stripe Connect status changed." },
+              "stripeConnectAccountId": { "type": "string", "description": "Stripe Connect account ID (acct_xxx)." },
+              "previousStatus": { 
+                "type": "string", 
+                "enum": ["NOT_STARTED", "PENDING", "ACTIVE", "RESTRICTED", "DISABLED"],
+                "description": "Previous Stripe Connect status."
+              },
+              "newStatus": { 
+                "type": "string", 
+                "enum": ["NOT_STARTED", "PENDING", "ACTIVE", "RESTRICTED", "DISABLED"],
+                "description": "New Stripe Connect status."
+              },
+              "requiresAction": {
+                "type": "boolean",
+                "description": "True if Stripe requires additional information from the court owner."
+              },
+              "restrictionReason": {
+                "type": ["string", "null"],
+                "description": "Reason for restriction/disabling (from Stripe), if applicable."
+              },
+              "affectedCourtIds": {
+                "type": "array",
+                "items": { "type": "string", "format": "uuid" },
+                "description": "List of court IDs owned by this user. Transaction Service uses this to update court-level caches."
+              }
             }
           }
         }

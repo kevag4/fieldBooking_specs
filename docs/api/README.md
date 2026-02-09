@@ -40,7 +40,7 @@ openapi-generator generate -i openapi-transaction-service.yaml -g typescript-fet
 |-------|--------------|----------|-------------|---------|
 | `booking-events` | `courtId` | Transaction Service | Platform Service | Availability cache invalidation, WebSocket broadcasts |
 | `notification-events` | `userId` | Transaction Service | Transaction Service | Notification dispatch (FCM, WebSocket, SendGrid) |
-| `court-update-events` | `courtId` | Platform Service | Transaction Service | Pricing/availability/policy sync |
+| `court-update-events` | `courtId` | Platform Service | Transaction Service | Pricing/availability/policy sync, Stripe Connect status |
 | `match-events` | `matchId` | Transaction Service | Platform Service | Open match map display updates |
 | `waitlist-events` | `courtId` | Transaction Service | Transaction Service | Waitlist FIFO processing on cancellations |
 | `analytics-events` | `courtId` | Both | Platform Service | Dashboard metrics, revenue tracking |
