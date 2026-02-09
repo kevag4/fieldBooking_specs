@@ -1286,6 +1286,418 @@ repos:
 | `basic` | 5GB | $5/mo |
 | `professional` | 50GB | $12/mo |
 
+## 15. External Services (Not Managed by Terraform)
+
+Some services in the court-booking platform are managed outside of Terraform:
+
+### Upstash Kafka (Serverless)
+
+Upstash Kafka is provisioned via the Upstash console or API, not Terraform. The platform uses Upstash for event streaming due to its serverless nature and zero-ops requirements for MVP.
+
+**Configuration approach:**
+- Create Kafka cluster and topics via Upstash dashboard
+- Store connection credentials in GitHub Secrets or DigitalOcean App Platform secrets
+- Inject into Kubernetes as `Secret` resources via Helm values or Kustomize
+
+**Required topics (create manually in Upstash):**
+| Topic | Partitions | Retention |
+|-------|------------|-----------|
+| `booking-events` | 3 | 7 days |
+| `notification-events` | 3 | 3 days |
+| `court-update-events` | 3 | 7 days |
+| `match-events` | 3 | 7 days |
+| `waitlist-events` | 3 | 3 days |
+| `analytics-events` | 3 | 30 days |
+| `security-events` | 3 | 30 days |
+
+**Environment variables for services:**
+```yaml
+# Injected via Kubernetes Secret
+KAFKA_BOOTSTRAP_SERVERS: "xxx.upstash.io:9092"
+KAFKA_SASL_USERNAME: "from-upstash-dashboard"
+KAFKA_SASL_PASSWORD: "from-upstash-dashboard"
+KAFKA_SECURITY_PROTOCOL: "SASL_SSL"
+KAFKA_SASL_MECHANISM: "SCRAM-SHA-256"
+```
+
+**Migration note:** If Upstash proves insufficient (see latency thresholds in system-design.md), migrate to Strimzi on DOKS. Terraform modules for Strimzi would be added at that time.
+
+### External APIs (Credentials Only)
+
+These services are configured via their respective dashboards; Terraform only needs to know about injecting credentials:
+
+| Service | Purpose | Credential Storage |
+|---------|---------|-------------------|
+| Stripe | Payments, Connect | GitHub Secrets → K8s Secret |
+| SendGrid | Email notifications | GitHub Secrets → K8s Secret |
+| Firebase | Push notifications (FCM) | GitHub Secrets → K8s Secret |
+| OpenWeatherMap | Weather forecasts | GitHub Secrets → K8s Secret |
+| OAuth providers | Google, Facebook, Apple | GitHub Secrets → K8s Secret |
+
+## 16. DNS Module Pattern
+
+```hcl
+# modules/dns/main.tf
+resource "digitalocean_domain" "this" {
+  count = var.create ? 1 : 0
+  name  = var.domain_name
+}
+
+resource "digitalocean_record" "a" {
+  for_each = var.create ? var.a_records : {}
+
+  domain = digitalocean_domain.this[0].id
+  type   = "A"
+  name   = each.key
+  value  = each.value
+  ttl    = var.ttl
+}
+
+resource "digitalocean_record" "cname" {
+  for_each = var.create ? var.cname_records : {}
+
+  domain = digitalocean_domain.this[0].id
+  type   = "CNAME"
+  name   = each.key
+  value  = each.value
+  ttl    = var.ttl
+}
+
+resource "digitalocean_record" "txt" {
+  for_each = var.create ? var.txt_records : {}
+
+  domain = digitalocean_domain.this[0].id
+  type   = "TXT"
+  name   = each.key
+  value  = each.value
+  ttl    = var.ttl
+}
+```
+
+```hcl
+# modules/dns/variables.tf
+variable "create" {
+  description = "Whether to create DNS resources"
+  type        = bool
+  default     = true
+}
+
+variable "domain_name" {
+  description = "The domain name to manage (e.g., courtbooking.app)"
+  type        = string
+}
+
+variable "a_records" {
+  description = "Map of A record names to IP addresses"
+  type        = map(string)
+  default     = {}
+}
+
+variable "cname_records" {
+  description = "Map of CNAME record names to target hostnames"
+  type        = map(string)
+  default     = {}
+}
+
+variable "txt_records" {
+  description = "Map of TXT record names to values"
+  type        = map(string)
+  default     = {}
+}
+
+variable "ttl" {
+  description = "TTL for DNS records in seconds"
+  type        = number
+  default     = 300
+}
+```
+
+```hcl
+# modules/dns/outputs.tf
+output "domain_id" {
+  description = "The ID of the domain"
+  value       = try(digitalocean_domain.this[0].id, null)
+}
+
+output "domain_urn" {
+  description = "The URN of the domain"
+  value       = try(digitalocean_domain.this[0].urn, null)
+}
+```
+
+### DNS Usage in Environment
+
+```hcl
+# environments/production/main.tf
+module "dns" {
+  source = "../../modules/dns"
+
+  domain_name = "courtbooking.app"
+
+  # A record pointing to load balancer IP (set after LB creation)
+  a_records = {
+    "@"   = var.load_balancer_ip  # Root domain
+    "api" = var.load_balancer_ip  # api.courtbooking.app
+  }
+
+  # CNAME for CDN
+  cname_records = {
+    "assets" = module.spaces.cdn_endpoint  # assets.courtbooking.app
+  }
+
+  # TXT for domain verification
+  txt_records = {
+    "@" = "v=spf1 include:sendgrid.net ~all"
+  }
+}
+```
+
+## 17. Secrets Management
+
+Terraform does NOT store secrets. Secrets flow through CI/CD environment variables.
+
+### Secret Injection Flow
+
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│ GitHub Secrets  │────►│ GitHub Actions  │────►│ Terraform Vars  │
+│ (encrypted)     │     │ (workflow env)  │     │ (TF_VAR_*)      │
+└─────────────────┘     └─────────────────┘     └────────┬────────┘
+                                                         │
+                                                         ▼
+                                               ┌─────────────────┐
+                                               │ K8s Secrets     │
+                                               │ (via Helm/Kust) │
+                                               └─────────────────┘
+```
+
+### GitHub Secrets Required
+
+| Secret Name | Used By | Description |
+|-------------|---------|-------------|
+| `DO_TOKEN` | Terraform | DigitalOcean API token |
+| `SPACES_ACCESS_ID` | Terraform | Spaces access key |
+| `SPACES_SECRET_KEY` | Terraform | Spaces secret key |
+| `STRIPE_SECRET_KEY` | K8s Secret | Stripe API key |
+| `STRIPE_WEBHOOK_SECRET` | K8s Secret | Stripe webhook signing secret |
+| `SENDGRID_API_KEY` | K8s Secret | SendGrid API key |
+| `FCM_SERVICE_ACCOUNT` | K8s Secret | Firebase service account JSON |
+| `OPENWEATHERMAP_API_KEY` | K8s Secret | Weather API key |
+| `KAFKA_SASL_PASSWORD` | K8s Secret | Upstash Kafka password |
+| `JWT_PRIVATE_KEY` | K8s Secret | RS256 private key for signing |
+| `JWT_PUBLIC_KEY` | K8s Secret | RS256 public key for verification |
+| `INTERNAL_API_KEY` | K8s Secret | Service-to-service auth (dev/test) |
+
+### CI/CD Secret Injection
+
+```yaml
+# .github/workflows/terraform-production.yml
+env:
+  TF_VAR_do_token: ${{ secrets.DO_TOKEN }}
+  TF_VAR_spaces_access_id: ${{ secrets.SPACES_ACCESS_ID }}
+  TF_VAR_spaces_secret_key: ${{ secrets.SPACES_SECRET_KEY }}
+
+jobs:
+  apply:
+    steps:
+      - name: Terraform Apply
+        run: terraform apply -auto-approve
+        working-directory: environments/production
+```
+
+### Kubernetes Secret Creation (Helm Values)
+
+```yaml
+# kubernetes/helm-values/platform-service-values.yaml
+env:
+  - name: STRIPE_SECRET_KEY
+    valueFrom:
+      secretKeyRef:
+        name: platform-secrets
+        key: stripe-secret-key
+  - name: JWT_PRIVATE_KEY
+    valueFrom:
+      secretKeyRef:
+        name: jwt-keys
+        key: private-key
+```
+
+### Creating K8s Secrets via kubectl (one-time setup)
+
+```bash
+# Create secrets from GitHub Actions or manually
+kubectl create secret generic platform-secrets \
+  --from-literal=stripe-secret-key="${STRIPE_SECRET_KEY}" \
+  --from-literal=sendgrid-api-key="${SENDGRID_API_KEY}" \
+  -n production
+
+kubectl create secret generic kafka-credentials \
+  --from-literal=sasl-password="${KAFKA_SASL_PASSWORD}" \
+  -n production
+
+kubectl create secret generic jwt-keys \
+  --from-file=private-key=./jwt-private.pem \
+  --from-file=public-key=./jwt-public.pem \
+  -n production
+```
+
+## 18. Kubernetes Manifest Orchestration
+
+### Two-Stage Apply in CI/CD
+
+Infrastructure and Kubernetes resources are applied in separate stages to avoid circular dependencies:
+
+```yaml
+# .github/workflows/deploy-production.yml
+jobs:
+  terraform-infra:
+    name: "Stage 1: Infrastructure"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Terraform Apply (DOKS, PG, Redis, Spaces)
+        run: terraform apply -auto-approve
+        working-directory: environments/production
+
+      - name: Export kubeconfig
+        run: |
+          doctl kubernetes cluster kubeconfig save court-booking-production
+
+  kubernetes-resources:
+    name: "Stage 2: Kubernetes Resources"
+    needs: terraform-infra
+    runs-on: ubuntu-latest
+    steps:
+      - name: Apply Kustomize base
+        run: kubectl apply -k kubernetes/base/namespaces
+
+      - name: Install NGINX Ingress (Helm)
+        run: |
+          helm upgrade --install nginx-ingress ingress-nginx/ingress-nginx \
+            -f kubernetes/helm-values/nginx-ingress-values.yaml \
+            -n ingress-nginx --create-namespace
+
+      - name: Install cert-manager (Helm)
+        run: |
+          helm upgrade --install cert-manager jetstack/cert-manager \
+            -f kubernetes/helm-values/cert-manager-values.yaml \
+            -n cert-manager --create-namespace
+
+      - name: Apply Kustomize overlay
+        run: kubectl apply -k kubernetes/overlays/production
+
+      - name: Install observability stack (Helm)
+        run: |
+          helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
+            -f kubernetes/helm-values/prometheus-values.yaml \
+            -n monitoring --create-namespace
+```
+
+### Kustomize vs Helm Decision
+
+| Use Kustomize For | Use Helm For |
+|-------------------|--------------|
+| Namespaces | NGINX Ingress Controller |
+| ConfigMaps | cert-manager |
+| Service accounts | Prometheus + Grafana |
+| Network policies | Jaeger |
+| Ingress resources | Loki |
+| Application deployments | Istio (staging/prod) |
+
+### Observability Stack Resource Sizing
+
+```yaml
+# kubernetes/helm-values/prometheus-values.yaml (production)
+prometheus:
+  prometheusSpec:
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+    retention: 15d
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: do-block-storage
+          resources:
+            requests:
+              storage: 50Gi
+    nodeSelector:
+      workload: observability
+    tolerations:
+      - key: dedicated
+        value: observability
+        effect: NoSchedule
+
+grafana:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 200m
+      memory: 512Mi
+  nodeSelector:
+    workload: observability
+  tolerations:
+    - key: dedicated
+      value: observability
+      effect: NoSchedule
+```
+
+```yaml
+# kubernetes/helm-values/loki-values.yaml (production)
+loki:
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+  persistence:
+    enabled: true
+    size: 20Gi
+    storageClassName: do-block-storage
+  nodeSelector:
+    workload: observability
+  tolerations:
+    - key: dedicated
+      value: observability
+      effect: NoSchedule
+```
+
+```yaml
+# kubernetes/helm-values/jaeger-values.yaml (production)
+jaeger:
+  collector:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 200m
+        memory: 512Mi
+  query:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+  storage:
+    type: elasticsearch  # Or use Jaeger with Cassandra/Badger for smaller footprint
+  nodeSelector:
+    workload: observability
+  tolerations:
+    - key: dedicated
+      value: observability
+      effect: NoSchedule
+```
+
 ## References
 
 - [antonbabenko/terraform-best-practices](https://github.com/antonbabenko/terraform-best-practices) — Naming, structure, key concepts
