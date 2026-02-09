@@ -1090,6 +1090,13 @@ The following features are fully specified in this document but excluded from MV
 - API versioning (Req 29.13–29.14) supports adding Phase 2 endpoints without breaking existing clients
 - Kafka event contracts already include events for Phase 2 features (match-events, waitlist-events, analytics promo events) — consumers should ignore unknown event types gracefully
 
+**Subscription stub strategy (Phases 1–9, before Phase 10 implements Req 9a):**
+- All court owners are treated as having an active subscription. The `subscription_status` column defaults to `'ACTIVE'` and the `subscriptionStatus` JWT claim is set to `ACTIVE` for every COURT_OWNER.
+- No subscription checks are enforced. Manual bookings, court visibility, and all admin features work without restriction regardless of subscription state.
+- Trial banners, trial countdown UI, subscription tier selection, and Stripe Billing integration are NOT implemented until Phase 10.
+- The "Trial Active" and "Trial Expired / No Subscription" court owner sub-states described in Requirement 1 are effectively bypassed — all court owners behave as "Subscribed" until Phase 10.
+- When Phase 10 lands, the hardcoded `ACTIVE` default is replaced with real trial/billing logic: `TRIAL` on registration with `trial_ends_at` set 30 days out, Stripe Billing webhooks updating status, and enforcement of expired-state restrictions.
+
 ## Requirements
 
 ### Requirement 1: User Registration, Authentication, Authorization, and Account Management
@@ -1112,8 +1119,8 @@ The platform defines four roles with distinct permission boundaries:
 - **Verified**: Courts become publicly visible. Full admin features available.
 - **Stripe Not Connected**: Manual bookings work. Customer bookings blocked (courts not bookable by customers).
 - **Stripe Connected**: Full payment flow enabled.
-- **Trial Active**: Full feature access with trial banner.
-- **Trial Expired / No Subscription**: Read-only access to existing data. No new manual bookings.
+- **Trial Active**: Full feature access with trial banner. ⏳ Phase 2 — until Phase 10, all court owners default to ACTIVE (see subscription stub strategy above).
+- **Trial Expired / No Subscription**: Read-only access to existing data. No new manual bookings. ⏳ Phase 2 — not enforced until Phase 10.
 
 #### Authorization Matrix
 
@@ -1534,7 +1541,7 @@ All monetary amounts are stored and transmitted as integers in the smallest curr
 9. WHEN a Stripe webhook is missed or fails, THE Transaction_Service SHALL implement idempotent retry logic and a reconciliation job (Quartz, every 15 minutes) that checks for PaymentIntents in inconsistent states
 10. WHEN a payment dispute or chargeback is received via `charge.dispute.created` webhook, THE Transaction_Service SHALL freeze the booking, notify the court owner with dispute details, and provide an API for the court owner to submit dispute evidence (booking confirmation, court usage logs)
 11. THE Transaction_Service SHALL operate in EUR (euro cents) as the single configured currency. All amounts in the API, database, and Stripe calls use integer cents. Multi-currency support can be added in the future by introducing a currency field per court and using Stripe's multi-currency PaymentIntents
-12. WHEN a booking is confirmed, THE Transaction_Service SHALL generate a digital receipt containing: booking ID, court name and address, date/time, duration, gross amount, platform fee, net amount, payment method last 4 digits, Stripe transaction ID, and VAT information if applicable
+12. WHEN a booking is confirmed, THE Transaction_Service SHALL generate a digital receipt containing: booking ID, court name and address, date/time, duration, gross amount, platform fee, net amount, payment method last 4 digits, and Stripe transaction ID. IF the court owner is VAT-registered (`vat_registered = true` in the court owner's profile, read via `v_user_basic`), the receipt SHALL additionally display: the court owner's VAT number, and a "VAT included" line calculated as `gross_amount - (gross_amount / 1.24)` (Greek standard 24% VAT rate, hardcoded). The platform does not file VAT — this is display-only for the customer's records; VAT obligations remain with the court owner.
 13. WHEN a receipt is generated, THE Transaction_Service SHALL send it via email (SendGrid) and make it available in the booking history API
 14. WHEN a customer's saved payment method expires or is removed between booking creation and pending confirmation capture, THE Transaction_Service SHALL notify the customer to update their payment method within 24 hours. If not updated, the pending booking is auto-cancelled and the authorization hold is released
 15. THE Transaction_Service SHALL support Apple Pay and Google Pay as payment methods through Stripe's Payment Request Button API

@@ -40,6 +40,8 @@ Owned by Platform Service. Manages users, authentication, courts, availability, 
 | tax_id | VARCHAR(50) | | Court owner tax ID (AFM) |
 | business_type | VARCHAR(30) | CHECK IN ('SOLE_PROPRIETOR','COMPANY','ASSOCIATION') | |
 | business_address | VARCHAR(500) | | |
+| vat_registered | BOOLEAN | NOT NULL DEFAULT FALSE | Whether the court owner is VAT-registered |
+| vat_number | VARCHAR(50) | | Greek VAT number (ΑΦΜ with EL prefix for EU VIES, e.g., 'EL123456789') |
 | contact_phone | VARCHAR(50) | | Business contact phone |
 | profile_image_url | VARCHAR(500) | | Profile photo / business logo |
 | status | VARCHAR(20) | NOT NULL DEFAULT 'ACTIVE', CHECK IN ('ACTIVE','SUSPENDED','DELETED') | |
@@ -955,6 +957,8 @@ SELECT
     stripe_connect_account_id,
     stripe_connect_status,
     stripe_customer_id,
+    vat_registered,
+    vat_number,
     status
 FROM platform.users
 WHERE status = 'ACTIVE';
