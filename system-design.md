@@ -32,6 +32,8 @@ The Court Booking Platform is a multi-tenant sports court reservation system ser
 │   │   • Path-based routing                                      │   │
 │   │   • Rate limiting                                           │   │
 │   │   • JWT presence check                                      │   │
+│   │   • Security headers (HSTS, X-Content-Type-Options,         │   │
+│   │     X-Frame-Options, CSP, Referrer-Policy)                  │   │
 │   └──────────────┬──────────────────────────┬───────────────────┘   │
 │                  │                          │                        │
 └──────────────────┼──────────────────────────┼────────────────────────┘
@@ -59,10 +61,12 @@ The Court Booking Platform is a multi-tenant sports court reservation system ser
 │   │ PostgreSQL    │  │ Redis  │  │ Upstash  │  │ DO Spaces      │  │
 │   │ + PostGIS     │  │ 2GB    │  │ Kafka    │  │ (S3-compat)    │  │
 │   │               │  │        │  │          │  │                │  │
-│   │ • platform    │  │ Cache  │  │ 6 topics │  │ Court images   │  │
-│   │   schema      │  │ Queues │  │ 20 event │  │ Attachments    │  │
+│   │ • platform    │  │ Cache  │  │ 7 topics │  │ Court images   │  │
+│   │   schema      │  │ Queues │  │ 21 event │  │ Attachments    │  │
 │   │ • transaction │  │ PubSub │  │ types    │  │ Assets         │  │
 │   │   schema      │  │ Flags  │  │          │  │                │  │
+│   │ • encryption  │  │        │  │          │  │                │  │
+│   │   at rest     │  │        │  │          │  │                │  │
 │   └──────────────┘  └────────┘  └──────────┘  └────────────────┘  │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
@@ -92,7 +96,7 @@ Target users: Customers (CUSTOMER role)
 
 ### Admin Web Portal (React) — `court-booking-admin-web`
 
-Target users: Court Owners (COURT_OWNER role), Platform Admins (PLATFORM_ADMIN role)
+Target users: Court Owners (COURT_OWNER role), Support Agents (SUPPORT_AGENT role), Platform Admins (PLATFORM_ADMIN role)
 
 | Capability | Backend Service | Protocol |
 |------------|----------------|----------|
@@ -108,7 +112,9 @@ Target users: Court Owners (COURT_OWNER role), Platform Admins (PLATFORM_ADMIN r
 | Promo code management | Platform Service | REST |
 | Feature flag management (admin) | Platform Service | REST |
 | User management (admin) | Platform Service | REST |
-| Support ticket management (admin) | Platform Service | REST |
+| Support ticket management (admin/agent) | Platform Service | REST |
+| Security alerts dashboard (admin/agent) | Platform Service | REST |
+| IP blocklist management (admin) | Platform Service | REST |
 | Real-time booking updates | Transaction Service | WebSocket |
 
 ## 3. API Routing
@@ -172,6 +178,9 @@ Formal event schemas are defined in [`docs/api/kafka-event-contracts.json`](docs
 │  pricing/policy ◄───┤                    │  (pricing, avail,   │
 │  cache update       │    Kafka ◄─────────┤   policy, deletion) │
 │                     │                    │  analytics-events   │
+│                     │                    │                     │
+│  security-events ───┼──► Kafka ────────►─┤  security alerts    │
+│                     │                    │  security-events ───┤
 └────────────────────┘                    └────────────────────┘
 ```
 
@@ -185,6 +194,7 @@ Formal event schemas are defined in [`docs/api/kafka-event-contracts.json`](docs
 | `match-events` | `matchId` | Transaction | Platform | MATCH_CREATED, MATCH_UPDATED, MATCH_CLOSED | Open match map display and search index updates |
 | `waitlist-events` | `courtId` | Transaction | Transaction | WAITLIST_SLOT_FREED, WAITLIST_HOLD_EXPIRED | FIFO waitlist processing on cancellations |
 | `analytics-events` | `courtId` | Both | Platform | BOOKING_ANALYTICS, REVENUE_ANALYTICS, PROMO_CODE_REDEEMED | Dashboard metrics, revenue tracking, promo code usage |
+| `security-events` | `userId` | Both | Platform | SECURITY_ALERT | Security monitoring, abuse detection, automated response triggers |
 
 #### Event Envelope
 
@@ -268,6 +278,9 @@ Shared PostgreSQL instance, separate schemas with strict write boundaries:
 │  │  reminder_rules           │  │                             │ │
 │  │  court_owner_notif_prefs  │  │                             │ │
 │  │  court_defaults           │  │                             │ │
+│  │  security_alerts          │  │                             │ │
+│  │  ip_blocklist             │  │                             │ │
+│  │  failed_auth_attempts     │  │                             │ │
 │  └───────────────────────────┘  └────────────────────────────┘ │
 │                                                              │
 │  Cross-schema: Transaction has READ-ONLY access to Platform  │
@@ -316,7 +329,7 @@ Shared PostgreSQL instance, separate schemas with strict write boundaries:
 - Access tokens: 15-min lifetime, RS256 signed, validated independently by both services
 - Refresh tokens: 30-day lifetime, server-side storage, rotation with replay detection
 - Biometric auth: refresh token stored in device secure enclave, gated by fingerprint/face ID
-- Three roles: CUSTOMER, COURT_OWNER (with sub-states), PLATFORM_ADMIN
+- Four roles: CUSTOMER, COURT_OWNER (with sub-states), SUPPORT_AGENT (read-only support/security), PLATFORM_ADMIN
 
 ## 8. Infrastructure Topology
 

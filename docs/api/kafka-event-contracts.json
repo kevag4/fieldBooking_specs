@@ -611,6 +611,53 @@
           }
         }
       }
+    },
+
+    "security-events": {
+      "description": "Security monitoring and abuse detection events published by both services. Platform Service consumes these for security alert management, dashboard display, and automated response actions (IP blocking, account suspension). Partitioned by userId when available, otherwise by IP address hash.",
+      "partitionKey": "userId",
+      "producer": "both",
+      "consumers": ["platform-service"],
+      "requirements": ["Req 32 — security monitoring and abuse detection"],
+      "events": {
+
+        "SECURITY_ALERT": {
+          "description": "Published when a security-relevant event is detected by either service. Platform Service persists these as security_alerts records and may trigger automated responses (IP blocking, rate limiting escalation, account suspension).",
+          "requirements": ["Req 32.5 — security alert system", "Req 32.6 — automated responses"],
+          "payload": {
+            "type": "object",
+            "required": ["alertType", "severity", "description"],
+            "properties": {
+              "alertType": {
+                "type": "string",
+                "enum": ["BOOKING_ABUSE", "PAYMENT_FRAUD", "SCRAPING", "BRUTE_FORCE", "SUSPICIOUS_LOGIN", "RATE_LIMIT_EXCEEDED", "WEBHOOK_REPLAY", "ACCOUNT_TAKEOVER"],
+                "description": "Category of security alert."
+              },
+              "severity": {
+                "type": "string",
+                "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"],
+                "description": "Alert severity. CRITICAL triggers immediate automated response."
+              },
+              "userId": { "type": ["string", "null"], "format": "uuid", "description": "Affected user ID, if identifiable." },
+              "ipAddress": { "type": ["string", "null"], "description": "Source IP address of the suspicious activity." },
+              "description": { "type": "string", "description": "Human-readable description of the detected activity." },
+              "metadata": {
+                "type": "object",
+                "description": "Alert-specific structured data.",
+                "properties": {
+                  "endpoint": { "type": ["string", "null"], "description": "API endpoint involved." },
+                  "requestCount": { "type": ["integer", "null"], "description": "Number of requests in detection window." },
+                  "windowSeconds": { "type": ["integer", "null"], "description": "Detection window duration." },
+                  "threshold": { "type": ["integer", "null"], "description": "Threshold that was exceeded." },
+                  "userAgent": { "type": ["string", "null"] },
+                  "geoLocation": { "type": ["string", "null"], "description": "Approximate geo-location of IP." },
+                  "stripeEventId": { "type": ["string", "null"], "description": "Related Stripe event ID for payment fraud alerts." }
+                }
+              }
+            }
+          }
+        }
+      }
     }
   }
 }

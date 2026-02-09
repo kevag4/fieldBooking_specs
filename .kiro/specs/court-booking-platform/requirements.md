@@ -108,7 +108,7 @@ graph TB
 
 **Platform Service (Spring Boot)**
 - User authentication and authorization (OAuth integration with biometric support, JWT issuance with role-based claims, refresh token management)
-- Role-based access control enforcement (CUSTOMER, COURT_OWNER, PLATFORM_ADMIN) per authorization matrix
+- Role-based access control enforcement (CUSTOMER, COURT_OWNER, SUPPORT_AGENT, PLATFORM_ADMIN) per authorization matrix
 - User registration with terms and conditions
 - User account management (profile updates, account deletion, GDPR compliance)
 - Player skill level management and matchmaking profiles
@@ -937,6 +937,7 @@ Every action performed by a court owner in the admin portal is recorded in an im
 - **Court_Owner**: User who owns and manages sports courts on the platform. Has sub-states: unverified/verified, Stripe connected/not connected, trial/subscribed/expired
 - **Customer**: User who books and pays for court reservations
 - **Platform_Admin**: Administrative user with platform-wide privileges (user management, dispute escalation, platform promo codes, feature flags). Not self-registerable
+- **Support_Agent**: Read-only support role with access to security alerts, support tickets, and user activity. Cannot modify security configuration or manage users. Created by PLATFORM_ADMIN only
 - **Court**: Sports facility (tennis court, padel court, basketball court, or 5x5 football court) available for booking
 - **Court_Type**: Category of court with specific attributes (duration, capacity, sport type)
 - **Court_Location_Type**: Attribute indicating if a court is in an open space (outdoor) or closed area (indoor)
@@ -1027,7 +1028,7 @@ Every action performed by a court owner in the admin portal is recorded in an im
 - **Notification_Urgency_Level**: Classification of notifications as CRITICAL (always immediate), STANDARD (respects quiet hours), or PROMOTIONAL (respects opt-out)
 - **Access_Token**: Short-lived JWT (15 minutes) containing user identity and role claims, validated independently by both services using a shared public key (RS256)
 - **Refresh_Token**: Long-lived token (30 days) stored server-side, used to obtain new access tokens without re-authentication. Rotated on each use with replay detection
-- **Authorization_Matrix**: Role-to-operation mapping that defines which actions each role (CUSTOMER, COURT_OWNER, PLATFORM_ADMIN) can perform
+- **Authorization_Matrix**: Role-to-operation mapping that defines which actions each role (CUSTOMER, COURT_OWNER, SUPPORT_AGENT, PLATFORM_ADMIN) can perform
 - **Secure_Enclave**: Device-level secure storage (iOS Keychain / Android Keystore) used to store refresh tokens for biometric authentication
 - **Service_To_Service_Auth**: Authentication between Platform Service and Transaction Service — mTLS via Istio in staging/production, shared API key in dev/test
 - **OpenAPI_Specification**: Formal REST API contract (OpenAPI 3.1) defining endpoints, request/response schemas, authentication, and error responses for each service
@@ -1097,13 +1098,14 @@ The following features are fully specified in this document but excluded from MV
 
 #### Roles and Permissions
 
-The platform defines three roles with distinct permission boundaries:
+The platform defines four roles with distinct permission boundaries:
 
 | Role | Description | Granted Via |
 |------|-------------|-------------|
 | **CUSTOMER** | Books courts, joins matches, manages personal bookings | Self-registration with role selection |
 | **COURT_OWNER** | Manages courts, availability, pricing, manual bookings, analytics | Self-registration with role selection + verification |
-| **PLATFORM_ADMIN** | Platform-wide operations: user management, dispute escalation, platform promo codes, feature flags, system configuration | Seeded in database or assigned by another PLATFORM_ADMIN — not self-registerable |
+| **SUPPORT_AGENT** | Views/responds to support tickets, views user activity for diagnosis, views security alerts (read-only). Cannot manage feature flags, users, system config, or security actions | Assigned by PLATFORM_ADMIN via admin user management |
+| **PLATFORM_ADMIN** | Platform-wide operations: user management, dispute escalation, platform promo codes, feature flags, system configuration, security management | Seeded in database or assigned by another PLATFORM_ADMIN — not self-registerable |
 
 **Court Owner Sub-States** (affect available operations within the COURT_OWNER role):
 - **Unverified**: Can set up courts (hidden from customers), access admin dashboard. Cannot have courts publicly visible.
@@ -1115,45 +1117,47 @@ The platform defines three roles with distinct permission boundaries:
 
 #### Authorization Matrix
 
-| Operation | CUSTOMER | COURT_OWNER | PLATFORM_ADMIN |
-|-----------|----------|-------------|----------------|
-| Register / Login | ✓ | ✓ | ✓ |
-| Book a court | ✓ | ✗ | ✗ |
-| Join open match | ✓ | ✗ | ✗ |
-| Create open match | ✓ | ✗ | ✗ |
-| Join waitlist | ✓ | ✗ | ✗ |
-| View/manage own bookings | ✓ | ✗ | ✗ |
-| Rate/review courts | ✓ | ✗ | ✗ |
-| Manage favorites/preferences | ✓ | ✗ | ✗ |
-| Create/edit/remove courts | ✗ | ✓ (own courts) | ✗ |
-| Configure availability/pricing | ✗ | ✓ (own courts) | ✗ |
-| Bulk court operations | ✗ | ✓ (own courts) | ✗ |
-| Create manual bookings | ✗ | ✓ (own courts, active subscription) | ✗ |
-| Confirm/reject pending bookings | ✗ | ✓ (own courts) | ✗ |
-| Bulk confirm/reject bookings | ✗ | ✓ (own courts) | ✗ |
-| View analytics/revenue | ✗ | ✓ (own courts) | ✓ (platform-wide) |
-| Export data (CSV/PDF) | ✗ | ✓ (own courts, rate-limited) | ✓ (platform-wide) |
-| Create court-level promo codes | ✗ | ✓ (own courts) | ✗ |
-| Create platform-wide promo codes | ✗ | ✗ | ✓ |
-| Manage personal settings | ✓ (own) | ✓ (own) | ✓ (own) |
-| Configure reminder rules | ✗ | ✓ (own rules) | ✗ |
-| View own audit log | ✗ | ✓ (own actions) | ✗ |
-| View any audit log | ✗ | ✗ | ✓ |
-| Manage feature flags | ✗ | ✗ | ✓ |
-| Manage users (suspend/unsuspend) | ✗ | ✗ | ✓ |
-| Review verification requests | ✗ | ✗ | ✓ |
-| Handle escalated disputes | ✗ | ✗ | ✓ |
-| View system health/observability | ✗ | ✗ | ✓ |
-| Configure platform settings | ✗ | ✗ | ✓ |
-| Submit support tickets | ✓ | ✓ | ✗ |
-| View own support tickets | ✓ | ✓ | ✗ |
-| Manage all support tickets | ✗ | ✗ | ✓ |
+| Operation | CUSTOMER | COURT_OWNER | SUPPORT_AGENT | PLATFORM_ADMIN |
+|-----------|----------|-------------|---------------|----------------|
+| Register / Login | ✓ | ✓ | ✓ | ✓ |
+| Book a court | ✓ | ✗ | ✗ | ✗ |
+| Join open match | ✓ | ✗ | ✗ | ✗ |
+| Create open match | ✓ | ✗ | ✗ | ✗ |
+| Join waitlist | ✓ | ✗ | ✗ | ✗ |
+| View/manage own bookings | ✓ | ✗ | ✗ | ✗ |
+| Rate/review courts | ✓ | ✗ | ✗ | ✗ |
+| Manage favorites/preferences | ✓ | ✗ | ✗ | ✗ |
+| Create/edit/remove courts | ✗ | ✓ (own courts) | ✗ | ✗ |
+| Configure availability/pricing | ✗ | ✓ (own courts) | ✗ | ✗ |
+| Bulk court operations | ✗ | ✓ (own courts) | ✗ | ✗ |
+| Create manual bookings | ✗ | ✓ (own courts, active subscription) | ✗ | ✗ |
+| Confirm/reject pending bookings | ✗ | ✓ (own courts) | ✗ | ✗ |
+| Bulk confirm/reject bookings | ✗ | ✓ (own courts) | ✗ | ✗ |
+| View analytics/revenue | ✗ | ✓ (own courts) | ✗ | ✓ (platform-wide) |
+| Export data (CSV/PDF) | ✗ | ✓ (own courts, rate-limited) | ✗ | ✓ (platform-wide) |
+| Create court-level promo codes | ✗ | ✓ (own courts) | ✗ | ✗ |
+| Create platform-wide promo codes | ✗ | ✗ | ✗ | ✓ |
+| Manage personal settings | ✓ (own) | ✓ (own) | ✓ (own) | ✓ (own) |
+| Configure reminder rules | ✗ | ✓ (own rules) | ✗ | ✗ |
+| View own audit log | ✗ | ✓ (own actions) | ✗ | ✗ |
+| View any audit log | ✗ | ✗ | ✗ | ✓ |
+| Manage feature flags | ✗ | ✗ | ✗ | ✓ |
+| Manage users (suspend/unsuspend) | ✗ | ✗ | ✗ | ✓ |
+| Review verification requests | ✗ | ✗ | ✗ | ✓ |
+| Handle escalated disputes | ✗ | ✗ | ✗ | ✓ |
+| View system health/observability | ✗ | ✗ | ✗ | ✓ |
+| Configure platform settings | ✗ | ✗ | ✗ | ✓ |
+| Submit support tickets | ✓ | ✓ | ✗ | ✗ |
+| View own support tickets | ✓ | ✓ | ✗ | ✗ |
+| View/respond to all support tickets | ✗ | ✗ | ✓ | ✓ |
+| View security alerts dashboard | ✗ | ✗ | ✓ (read-only) | ✓ |
+| Manage security settings (IP blocks, thresholds) | ✗ | ✗ | ✗ | ✓ |
 
 #### JWT Token Structure
 
 WHEN authentication is complete, THE Platform_Service SHALL issue a JWT access token containing the following claims:
 - `sub`: User ID (UUID)
-- `role`: One of `CUSTOMER`, `COURT_OWNER`, `PLATFORM_ADMIN`
+- `role`: One of `CUSTOMER`, `COURT_OWNER`, `SUPPORT_AGENT`, `PLATFORM_ADMIN`
 - `email`: User's email address
 - `verified`: Boolean — court owner verification status (only for COURT_OWNER)
 - `stripeConnected`: Boolean — Stripe Connect onboarding status (only for COURT_OWNER)
@@ -2622,3 +2626,220 @@ The mobile app SHALL use the `message` field for user-facing display and the `er
 44. THE app SHALL perform client-side validation before sending API requests: date/time must be in the future, booking duration must match court configuration, number of people must not exceed court capacity, promo code format must be alphanumeric (3-20 chars)
 45. WHEN client-side validation fails, THE app SHALL show inline field-level error messages without making an API call
 46. THE app SHALL NOT rely solely on client-side validation — all validations are also enforced server-side as the authoritative check
+
+
+### Requirement 32: Security Monitoring, Abuse Detection, and Malicious Flow Alerting
+
+**User Story:** As a platform administrator, I want automated detection and alerting for suspicious activities, abuse patterns, and malicious flows, so that I can protect the platform, its users, and financial transactions from fraud and abuse.
+
+#### Roles and Permissions Update
+
+The existing `PLATFORM_ADMIN` role is extended with a `SUPPORT_AGENT` sub-role to enforce least-privilege access:
+
+| Role | Description | Granted Via |
+|------|-------------|-------------|
+| **SUPPORT_AGENT** | Can view/respond to support tickets, view user activity for diagnosis, view security alerts (read-only). Cannot manage feature flags, users, system config, or security actions (IP blocking, account suspension). | Assigned by PLATFORM_ADMIN via admin user management |
+
+**Updated Authorization Matrix (additions only):**
+
+| Operation | CUSTOMER | COURT_OWNER | SUPPORT_AGENT | PLATFORM_ADMIN |
+|-----------|----------|-------------|---------------|----------------|
+| View/respond to support tickets | ✗ | ✗ | ✓ | ✓ |
+| View user activity for diagnosis | ✗ | ✗ | ✓ (read-only) | ✓ |
+| View security alerts dashboard | ✗ | ✗ | ✓ (read-only) | ✓ |
+| Block/unblock IP addresses | ✗ | ✗ | ✗ | ✓ |
+| Suspend/unsuspend user accounts | ✗ | ✗ | ✗ | ✓ |
+| View security audit log | ✗ | ✗ | ✗ | ✓ |
+| Configure abuse detection thresholds | ✗ | ✗ | ✗ | ✓ |
+| Manage security settings | ✗ | ✗ | ✗ | ✓ |
+| Dismiss/acknowledge security alerts | ✗ | ✗ | ✗ | ✓ |
+
+#### Acceptance Criteria
+
+**Account Security and Brute Force Protection:**
+1. THE Platform_Service SHALL implement account lockout after 5 consecutive failed authentication attempts from the same IP address within a 15-minute window
+2. WHEN an account is locked, THE Platform_Service SHALL lock it for 30 minutes and notify the user via email with a "Was this you?" link to unlock
+3. THE Platform_Service SHALL track failed authentication attempts in Redis with a sliding window counter keyed by IP address and user email
+4. THE Platform_Service SHALL detect and block credential stuffing attacks by monitoring for high volumes of failed logins across different accounts from the same IP (threshold: 20 failed attempts across any accounts within 5 minutes)
+5. WHEN a suspicious login is detected (new device + new IP + different country from previous logins), THE Platform_Service SHALL require additional verification via email confirmation before granting access
+
+**Booking Abuse Detection:**
+6. THE Transaction_Service SHALL enforce velocity limits on booking creation: maximum 5 bookings per user per hour, maximum 10 bookings per user per day
+7. THE Transaction_Service SHALL detect and flag booking-cancellation cycling: if a user creates and cancels more than 3 bookings for the same court within 24 hours, THE system SHALL flag the user for review and temporarily block further bookings for that court
+8. THE Transaction_Service SHALL detect slot-griefing patterns: if a user repeatedly books and cancels slots at peak times (>5 cancellations in 7 days), THE system SHALL generate a SECURITY_ALERT event and optionally restrict the user to instant-pay-only bookings (no pending confirmation)
+9. THE Transaction_Service SHALL detect and prevent rapid-fire booking attempts for the same slot from the same user (deduplication window: 5 seconds)
+
+**Payment Fraud Detection:**
+10. THE Transaction_Service SHALL monitor chargeback rates per court owner and generate alerts when the rate exceeds 0.75% (Stripe's warning threshold) or 1% (Stripe's action threshold)
+11. THE Transaction_Service SHALL detect unusual payment patterns: multiple failed payment attempts with different cards from the same user (threshold: 3 different cards within 1 hour) and generate a SECURITY_ALERT
+12. THE Transaction_Service SHALL flag bookings where the payment card's country differs from the user's registered country for manual review
+13. THE Platform_Service SHALL verify Stripe Connect account status before processing payouts and flag court owners whose Stripe accounts become restricted or disabled
+14. THE Transaction_Service SHALL detect potential self-booking fraud: court owners creating customer accounts to book their own courts (heuristic: same IP, same device, booking pattern analysis) and generate a SECURITY_ALERT
+
+**Waitlist and Open Match Abuse (Phase 2):**
+15. ⏳ **PHASE 2** — THE Transaction_Service SHALL detect waitlist manipulation: users joining and leaving waitlists repeatedly to block slots (threshold: 5 join/leave cycles for the same slot within 24 hours)
+16. ⏳ **PHASE 2** — THE Transaction_Service SHALL detect open match abuse: creators who cancel matches after players have joined (threshold: 3 cancelled matches with joined players within 30 days) and restrict match creation privileges
+
+**Promo Code Abuse (Phase 2):**
+17. ⏳ **PHASE 2** — THE Platform_Service SHALL detect multi-account promo code abuse by correlating device fingerprints, IP addresses, and payment methods across accounts that redeem the same promo code
+18. ⏳ **PHASE 2** — THE Platform_Service SHALL enforce a global rate limit on promo code redemptions: maximum 3 promo codes per user per day
+
+**Scraping and API Abuse Prevention:**
+19. THE Platform_Service SHALL detect automated scraping patterns: requests with no User-Agent, requests at inhuman speeds (>10 requests/second sustained), or systematic enumeration of court IDs
+20. THE Platform_Service SHALL implement progressive rate limiting: after exceeding the standard rate limit (100 read/min, 30 write/min), subsequent violations within the same hour result in increasingly longer lockout periods (1 min → 5 min → 15 min → 1 hour)
+21. THE Platform_Service SHALL maintain an IP blocklist in Redis that can be managed by PLATFORM_ADMIN via the admin API and is checked at the NGINX Ingress level for early rejection
+
+**Security Alert System:**
+22. WHEN any abuse detection rule is triggered, THE Platform_Service or Transaction_Service SHALL publish a `SECURITY_ALERT` event to a new `security-events` Kafka topic
+23. THE `SECURITY_ALERT` event SHALL include: alertType, severity (LOW, MEDIUM, HIGH, CRITICAL), userId (if applicable), ipAddress, description, metadata (rule-specific details), and timestamp
+24. THE Platform_Service SHALL consume security events and store them in a `security_alerts` table for dashboard display and historical analysis
+25. WHEN a CRITICAL severity alert is generated (e.g., chargeback rate exceeded, credential stuffing detected), THE system SHALL send immediate notifications to PLATFORM_ADMIN users via email and push notification
+26. THE admin web portal SHALL display a security alerts dashboard with filtering by severity, type, date range, and status (NEW, ACKNOWLEDGED, RESOLVED, FALSE_POSITIVE)
+27. THE Platform_Service SHALL provide an API for PLATFORM_ADMIN to acknowledge, resolve, or mark alerts as false positives
+
+**Automated Security Responses:**
+28. WHEN a user triggers a HIGH or CRITICAL security alert, THE Platform_Service SHALL automatically restrict the user's account to read-only mode (can view but not create bookings or payments) until a PLATFORM_ADMIN reviews and resolves the alert
+29. WHEN an IP address triggers credential stuffing detection, THE Platform_Service SHALL automatically add it to the temporary blocklist (24-hour TTL) and log the action in the security audit trail
+30. THE Platform_Service SHALL support configurable auto-response rules: PLATFORM_ADMIN can configure which alert types trigger automatic account restrictions vs. manual review only
+
+### Requirement 33: Input Validation, Sanitization, and API Security Hardening
+
+**User Story:** As a developer and platform operator, I want comprehensive input validation, output sanitization, and security headers across all services, so that the platform is protected against injection attacks, XSS, CSRF, and other OWASP Top 10 vulnerabilities.
+
+#### Acceptance Criteria
+
+**Input Validation:**
+1. BOTH services SHALL use parameterized queries (via Spring Data JPA / Hibernate) for ALL database operations — no string concatenation in SQL queries
+2. BOTH services SHALL validate all input parameters against strict schemas: string lengths, numeric ranges, enum values, date formats, UUID formats, and reject requests that don't conform with `400 Bad Request`
+3. THE Platform_Service SHALL validate all user-generated text content (court descriptions, support messages, review comments, promo code names) by stripping HTML tags and JavaScript using an allowlist-based sanitizer (e.g., OWASP Java HTML Sanitizer)
+4. THE Platform_Service SHALL validate file uploads beyond format and size: uploaded images SHALL be re-encoded (re-saved) to strip embedded metadata (EXIF) and potential malicious payloads; PDF uploads for verification documents SHALL be scanned for embedded scripts
+5. BOTH services SHALL validate the `Content-Type` header matches the actual request body format and reject mismatches with `415 Unsupported Media Type`
+6. BOTH services SHALL enforce maximum request body sizes: 10MB for file uploads, 1MB for JSON request bodies, and reject oversized requests at the NGINX Ingress level with `413 Payload Too Large`
+
+**Output Encoding and XSS Prevention:**
+7. BOTH services SHALL set `Content-Type: application/json; charset=utf-8` on all JSON responses to prevent content-type sniffing
+8. THE admin web application (React) SHALL use React's built-in JSX escaping for all dynamic content rendering and SHALL NOT use `dangerouslySetInnerHTML` without explicit sanitization
+9. THE mobile application SHALL sanitize any HTML content received from the API before rendering (court descriptions, support messages)
+
+**Security Headers:**
+10. THE NGINX Ingress SHALL set the following security headers on ALL responses:
+    - `Strict-Transport-Security: max-age=31536000; includeSubDomains; preload` (HSTS)
+    - `X-Content-Type-Options: nosniff`
+    - `X-Frame-Options: DENY`
+    - `Referrer-Policy: strict-origin-when-cross-origin`
+    - `Permissions-Policy: camera=(), microphone=(), geolocation=(self)`
+11. THE admin web application SHALL set a Content-Security-Policy header: `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https://*.digitaloceanspaces.com; connect-src 'self' https://api.courtbooking.gr wss://api.courtbooking.gr https://api.stripe.com; frame-src https://js.stripe.com; font-src 'self'`
+12. THE admin web application SHALL set `X-XSS-Protection: 0` (disabled in favor of CSP, per modern best practice)
+
+**CORS Configuration:**
+13. THE NGINX Ingress SHALL configure CORS to allow requests only from known origins: the mobile app's web build domain, the admin web portal domain, and localhost for development
+14. THE CORS configuration SHALL restrict allowed methods to `GET, POST, PUT, DELETE, OPTIONS` and allowed headers to `Authorization, Content-Type, Accept, Accept-Language, X-Idempotency-Key, X-Request-ID`
+15. THE CORS configuration SHALL NOT use wildcard (`*`) for `Access-Control-Allow-Origin` in any environment except local development
+
+**CSRF Protection:**
+16. THE admin web application SHALL implement CSRF protection using the Synchronizer Token Pattern (Spring Security's default) for all state-changing operations
+17. THE admin web application SHALL set secure cookie attributes: `HttpOnly`, `Secure`, `SameSite=Strict` on all session-related cookies
+18. THE mobile application (Flutter) is exempt from CSRF protection as it uses Bearer token authentication without cookies
+
+**Webhook Security:**
+19. THE Transaction_Service SHALL verify Stripe webhook signatures using the `Stripe-Signature` header and the webhook signing secret, rejecting requests with invalid signatures with `400 Bad Request`
+20. THE Transaction_Service SHALL enforce timestamp tolerance on Stripe webhooks: reject events where the `Stripe-Signature` timestamp is older than 5 minutes to prevent replay attacks
+21. THE NGINX Ingress SHALL restrict webhook endpoints (`/api/payments/webhooks/*`) to Stripe's published IP ranges using IP allowlisting
+22. THE Platform_Service SHALL verify Stripe Connect and Billing webhook signatures separately using their respective signing secrets
+
+### Requirement 34: Data Encryption, Classification, and Retention Policies
+
+**User Story:** As a platform operator handling financial and personal data, I want all data encrypted at rest and in transit with clear classification and retention policies, so that we comply with GDPR and protect user data throughout its lifecycle.
+
+#### Acceptance Criteria
+
+**Encryption at Rest:**
+1. THE DigitalOcean Managed PostgreSQL instance SHALL have encryption at rest enabled (AES-256, managed by DigitalOcean)
+2. THE DigitalOcean Managed Redis instance SHALL have encryption at rest enabled
+3. THE DigitalOcean Spaces (S3-compatible storage) SHALL have server-side encryption enabled for all stored objects (court images, verification documents, support attachments)
+4. ALL database backups SHALL be encrypted at rest using DigitalOcean's managed encryption
+
+**Encryption in Transit:**
+5. ALL client-to-server communication SHALL use TLS 1.2 or higher — TLS 1.0 and 1.1 SHALL be disabled at the NGINX Ingress level
+6. ALL service-to-service communication SHALL use mTLS (via Istio in staging/production) or TLS (in dev/test)
+7. ALL connections to managed services (PostgreSQL, Redis, Kafka) SHALL use TLS/SSL
+8. THE Upstash Kafka connection SHALL use SASL/SSL authentication
+
+**Data Classification:**
+
+| Classification | Examples | Access Controls | Retention |
+|---------------|----------|-----------------|-----------|
+| **PUBLIC** | Court names, addresses, types, amenities, pricing, availability | No auth required for read | Indefinite |
+| **INTERNAL** | Booking counts, aggregated analytics, feature flags | Authenticated users with appropriate role | Indefinite |
+| **CONFIDENTIAL** | User emails, phone numbers, names, booking details, payment amounts | Owner + authorized roles per matrix | Active: indefinite; Deleted accounts: anonymized |
+| **RESTRICTED** | Payment card tokens (Stripe-managed), refresh token hashes, OAuth tokens, Stripe API keys, JWT signing keys | Service-level only, never exposed in API responses or logs | Per Stripe/provider policy; tokens: 30 days |
+
+9. BOTH services SHALL ensure RESTRICTED data is never logged — log sanitization SHALL strip JWT tokens, refresh tokens, Stripe API keys, and payment card details from all log output
+10. BOTH services SHALL ensure CONFIDENTIAL data (emails, phone numbers) is not included in Kafka event payloads — events SHALL reference users by ID only, with consumers looking up details as needed
+
+**Retention Policies:**
+
+| Data Type | Active Retention | Archive/Anonymization | Deletion |
+|-----------|-----------------|----------------------|----------|
+| User accounts | While active | Anonymized on deletion request (GDPR) | Personal data removed, UUID retained |
+| Bookings | 2 years from booking date | Anonymized after 2 years (user data removed, aggregates retained) | Never fully deleted (audit trail) |
+| Payments | 7 years (tax/legal requirement) | Archived after 7 years | Per legal requirements |
+| Audit logs (both schemas) | 2 years | Archived to cold storage after 2 years | After 5 years |
+| Security alerts | 1 year | Archived after 1 year | After 3 years |
+| Support tickets | 2 years after resolution | Anonymized after 2 years | Personal data removed |
+| Application logs (Loki) | 30 days full searchability | 90 days compressed archive | Deleted after 90 days |
+| Redis cache | TTL-based (5 min – 24 hours) | N/A | Auto-expired |
+| Refresh tokens | 30 days | N/A | Deleted on expiry/revocation |
+| Device tokens | While active | N/A | Deleted on unregister |
+
+11. THE Platform_Service SHALL implement a scheduled job (weekly) that anonymizes user data for accounts deleted more than 30 days ago
+12. THE Platform_Service SHALL implement a scheduled job (monthly) that archives audit logs older than 2 years to compressed cold storage
+13. THE Transaction_Service SHALL implement a scheduled job (monthly) that anonymizes booking records older than 2 years (replace user names/emails with "Anonymized User", retain booking amounts and dates for analytics)
+
+**Secret Rotation:**
+14. THE JWT signing key pair (RS256) SHALL be rotated every 90 days using a key rotation procedure: generate new key pair → both services load new public key → Platform Service starts signing with new private key → old public key remains valid for 15 minutes (max access token lifetime) → old key pair is retired
+15. THE database credentials SHALL be rotated every 90 days via External Secrets Operator with zero-downtime rotation (new credentials provisioned → services pick up new credentials via secret refresh → old credentials revoked)
+16. THE internal API key (dev/test service-to-service auth) SHALL be rotated every 30 days
+17. THE Stripe webhook signing secrets SHALL be rotated annually or immediately if a compromise is suspected
+18. ALL secret rotation events SHALL be logged in the security audit trail
+
+### Requirement 35: WebSocket Authentication and Channel Authorization
+
+**User Story:** As a user receiving real-time updates, I want my WebSocket connection to be properly authenticated and authorized, so that I only receive updates relevant to me and my data is not exposed to other users.
+
+#### Acceptance Criteria
+
+**WebSocket Authentication:**
+1. WHEN a client initiates a WebSocket connection, THE Transaction_Service SHALL require a valid JWT access token passed as a query parameter (`?token=<jwt>`) during the WebSocket upgrade handshake
+2. THE Transaction_Service SHALL validate the JWT token (signature, expiration, claims) before accepting the WebSocket upgrade — invalid tokens SHALL result in a `401` HTTP response and connection rejection
+3. WHEN a WebSocket connection is established, THE Transaction_Service SHALL associate the connection with the authenticated user's ID and role extracted from the JWT claims
+4. WHEN the JWT access token expires during an active WebSocket connection, THE Transaction_Service SHALL send a `TOKEN_EXPIRING` message to the client 60 seconds before expiration
+5. WHEN the client receives a `TOKEN_EXPIRING` message, THE client SHALL obtain a new access token via the refresh flow and send a `TOKEN_REFRESH` message with the new token over the existing WebSocket connection
+6. THE Transaction_Service SHALL validate the refreshed token and update the connection's authentication context — if the refresh token is invalid, THE service SHALL close the connection with code `4001` (authentication expired)
+7. IF no token refresh is received within 60 seconds of the `TOKEN_EXPIRING` message, THE Transaction_Service SHALL close the connection with code `4001`
+
+**Channel Authorization:**
+8. THE Transaction_Service SHALL enforce channel-level authorization: CUSTOMER users SHALL only receive updates for their own bookings, their own notifications, and courts they are currently viewing
+9. THE Transaction_Service SHALL enforce that COURT_OWNER users only receive updates for bookings on their own courts and their own notifications
+10. THE Transaction_Service SHALL prevent cross-user data leakage: a user SHALL NOT receive booking details, payment status, or notifications belonging to another user through WebSocket channels
+11. WHEN a client subscribes to a court's availability channel, THE Transaction_Service SHALL allow the subscription (availability is public data) but SHALL NOT include booking customer details in availability update messages
+12. WHEN a client subscribes to a booking status channel, THE Transaction_Service SHALL verify the user is either the booking customer or the court owner before allowing the subscription
+
+**WebSocket Message Validation:**
+13. THE Transaction_Service SHALL validate all incoming WebSocket messages against expected schemas and disconnect clients that send malformed or unexpected messages (max 3 invalid messages before disconnect)
+14. THE Transaction_Service SHALL enforce a maximum WebSocket message size of 64KB and disconnect clients that exceed this limit
+15. THE Transaction_Service SHALL rate-limit incoming WebSocket messages to 10 messages per second per connection and drop excess messages with a warning
+
+### Requirement 36: Stripe Connect Security and Payout Fraud Prevention
+
+**User Story:** As a platform operator processing financial transactions, I want robust security around Stripe Connect operations and payout processing, so that court owners receive legitimate payouts and the platform is protected from payout fraud.
+
+#### Acceptance Criteria
+
+1. THE Platform_Service SHALL verify Stripe Connect account status (`charges_enabled`, `payouts_enabled`) before allowing any customer bookings for a court owner's courts
+2. THE Platform_Service SHALL handle Stripe `account.updated` webhook events and immediately update the court owner's `stripe_connect_status` — if the account becomes restricted or disabled, THE Platform_Service SHALL hide the court owner's courts from customer search results
+3. THE Platform_Service SHALL handle Stripe `account.application.deauthorized` events: when a court owner disconnects their Stripe account, THE Platform_Service SHALL set `stripe_connect_status` to `DISABLED`, hide courts, and notify the court owner
+4. THE Transaction_Service SHALL monitor payout amounts and flag unusual patterns: single payouts exceeding €5,000, total weekly payouts exceeding €10,000, or sudden increases (>300% week-over-week) for manual review
+5. THE Transaction_Service SHALL detect potential self-booking fraud by correlating: bookings where the customer's IP address matches the court owner's last known IP, bookings where the customer's device ID matches the court owner's device, or bookings where the customer account was created within 24 hours of the booking
+6. WHEN self-booking fraud is suspected, THE Transaction_Service SHALL generate a CRITICAL security alert and hold the payout for manual review by PLATFORM_ADMIN
+7. THE Platform_Service SHALL require re-verification of Stripe Connect identity when a court owner changes their bank account details, to prevent account takeover leading to payout redirection

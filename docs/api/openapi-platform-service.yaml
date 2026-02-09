@@ -64,6 +64,8 @@ tags:
     description: Bulk court and booking operations
   - name: Verification
     description: Court owner verification management
+  - name: Security
+    description: Security monitoring, abuse detection, and IP blocklist management (PLATFORM_ADMIN, SUPPORT_AGENT read-only)
 
 security:
   - BearerAuth: []
@@ -2455,6 +2457,251 @@ paths:
               schema:
                 $ref: '#/components/schemas/VerificationRequest'
 
+  # ─── Security (PLATFORM_ADMIN + SUPPORT_AGENT read-only) ───────────────────
+  /api/admin/security/alerts:
+    get:
+      tags: [Security, Admin]
+      summary: List security alerts
+      description: |
+        Returns paginated security alerts with filtering by status, severity, and alert type.
+        SUPPORT_AGENT has read-only access. PLATFORM_ADMIN has full access.
+      operationId: listSecurityAlerts
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [OPEN, ACKNOWLEDGED, INVESTIGATING, RESOLVED, FALSE_POSITIVE]
+        - name: severity
+          in: query
+          schema:
+            type: string
+            enum: [LOW, MEDIUM, HIGH, CRITICAL]
+        - name: alertType
+          in: query
+          schema:
+            type: string
+            enum: [BOOKING_ABUSE, PAYMENT_FRAUD, SCRAPING, BRUTE_FORCE, SUSPICIOUS_LOGIN, RATE_LIMIT_EXCEEDED, WEBHOOK_REPLAY, ACCOUNT_TAKEOVER]
+        - name: fromDate
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: toDate
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: size
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: Paginated list of security alerts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecurityAlertListResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/admin/security/alerts/{alertId}/acknowledge:
+    post:
+      tags: [Security, Admin]
+      summary: Acknowledge a security alert
+      description: Marks an alert as acknowledged. PLATFORM_ADMIN only.
+      operationId: acknowledgeSecurityAlert
+      parameters:
+        - name: alertId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Alert acknowledged
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecurityAlert'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/admin/security/alerts/{alertId}/resolve:
+    post:
+      tags: [Security, Admin]
+      summary: Resolve a security alert
+      description: Marks an alert as resolved with resolution notes. PLATFORM_ADMIN only.
+      operationId: resolveSecurityAlert
+      parameters:
+        - name: alertId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [RESOLVED, FALSE_POSITIVE]
+                resolutionNotes:
+                  type: string
+      responses:
+        '200':
+          description: Alert resolved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecurityAlert'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/admin/security/ip-blocklist:
+    get:
+      tags: [Security, Admin]
+      summary: List blocked IPs
+      description: Returns all currently blocked IP addresses. PLATFORM_ADMIN and SUPPORT_AGENT (read-only).
+      operationId: listBlockedIps
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: size
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: List of blocked IPs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IpBlocklistResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [Security, Admin]
+      summary: Block an IP address
+      description: Adds an IP address to the blocklist. PLATFORM_ADMIN only.
+      operationId: blockIpAddress
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ipAddress, reason]
+              properties:
+                ipAddress:
+                  type: string
+                  description: IPv4 or IPv6 address
+                cidrRange:
+                  type: string
+                  description: Optional CIDR notation for range blocks
+                reason:
+                  type: string
+                relatedAlertId:
+                  type: string
+                  format: uuid
+                expiresAt:
+                  type: string
+                  format: date-time
+                  description: Null for permanent blocks
+      responses:
+        '201':
+          description: IP blocked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IpBlocklistEntry'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: IP address already blocked
+
+  /api/admin/security/ip-blocklist/{entryId}:
+    delete:
+      tags: [Security, Admin]
+      summary: Unblock an IP address
+      description: Removes an IP address from the blocklist. PLATFORM_ADMIN only.
+      operationId: unblockIpAddress
+      parameters:
+        - name: entryId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: IP unblocked
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/admin/security/config:
+    get:
+      tags: [Security, Admin]
+      summary: Get abuse detection configuration
+      description: Returns current thresholds for abuse detection rules. PLATFORM_ADMIN only.
+      operationId: getSecurityConfig
+      responses:
+        '200':
+          description: Security configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecurityConfig'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    put:
+      tags: [Security, Admin]
+      summary: Update abuse detection configuration
+      description: Updates thresholds for abuse detection rules. PLATFORM_ADMIN only.
+      operationId: updateSecurityConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SecurityConfig'
+      responses:
+        '200':
+          description: Configuration updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecurityConfig'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Components
@@ -2552,7 +2799,7 @@ components:
 
     UserRole:
       type: string
-      enum: [CUSTOMER, COURT_OWNER, PLATFORM_ADMIN]
+      enum: [CUSTOMER, COURT_OWNER, SUPPORT_AGENT, PLATFORM_ADMIN]
 
     BookingConfirmationMode:
       type: string
@@ -4311,3 +4558,161 @@ components:
           type: integer
         size:
           type: integer
+
+    # ─── Security ─────────────────────────────────────────────────────────
+    SecurityAlert:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        alertType:
+          type: string
+          enum: [BOOKING_ABUSE, PAYMENT_FRAUD, SCRAPING, BRUTE_FORCE, SUSPICIOUS_LOGIN, RATE_LIMIT_EXCEEDED, WEBHOOK_REPLAY, ACCOUNT_TAKEOVER]
+        severity:
+          type: string
+          enum: [LOW, MEDIUM, HIGH, CRITICAL]
+        userId:
+          type: string
+          format: uuid
+          nullable: true
+        ipAddress:
+          type: string
+          nullable: true
+        description:
+          type: string
+        metadata:
+          type: object
+          nullable: true
+          description: Alert-specific structured data
+        status:
+          type: string
+          enum: [OPEN, ACKNOWLEDGED, INVESTIGATING, RESOLVED, FALSE_POSITIVE]
+        acknowledgedBy:
+          type: string
+          format: uuid
+          nullable: true
+        resolvedBy:
+          type: string
+          format: uuid
+          nullable: true
+        resolutionNotes:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        acknowledgedAt:
+          type: string
+          format: date-time
+          nullable: true
+        resolvedAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    SecurityAlertListResponse:
+      type: object
+      properties:
+        alerts:
+          type: array
+          items:
+            $ref: '#/components/schemas/SecurityAlert'
+        totalElements:
+          type: integer
+        page:
+          type: integer
+        size:
+          type: integer
+
+    IpBlocklistEntry:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        ipAddress:
+          type: string
+        cidrRange:
+          type: string
+          nullable: true
+        reason:
+          type: string
+        blockedBy:
+          type: string
+          format: uuid
+        relatedAlertId:
+          type: string
+          format: uuid
+          nullable: true
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Null for permanent blocks
+        createdAt:
+          type: string
+          format: date-time
+
+    IpBlocklistResponse:
+      type: object
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/IpBlocklistEntry'
+        totalElements:
+          type: integer
+        page:
+          type: integer
+        size:
+          type: integer
+
+    SecurityConfig:
+      type: object
+      description: Configurable thresholds for abuse detection rules
+      properties:
+        bookingAbuseThreshold:
+          type: object
+          properties:
+            maxBookingsPerHour:
+              type: integer
+              description: Max bookings a single user can create per hour
+            maxCancellationsPerDay:
+              type: integer
+              description: Max cancellations before flagging
+            maxHoldAbandonsPerHour:
+              type: integer
+              description: Max slot hold-and-abandon cycles per hour
+        bruteForceThreshold:
+          type: object
+          properties:
+            maxFailedAttemptsPerWindow:
+              type: integer
+              description: Max failed auth attempts before lockout
+            windowMinutes:
+              type: integer
+              description: Rolling window duration in minutes
+            lockoutMinutes:
+              type: integer
+              description: Lockout duration after threshold exceeded
+        scrapingThreshold:
+          type: object
+          properties:
+            maxRequestsPerMinute:
+              type: integer
+              description: Max requests per minute from a single IP to search/listing endpoints
+            maxRequestsPerHour:
+              type: integer
+        rateLimitConfig:
+          type: object
+          properties:
+            globalRpm:
+              type: integer
+              description: Global requests per minute per IP
+            authRpm:
+              type: integer
+              description: Auth endpoint requests per minute per IP
+            searchRpm:
+              type: integer
+              description: Search endpoint requests per minute per IP

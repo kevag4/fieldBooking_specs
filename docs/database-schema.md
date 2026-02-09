@@ -16,7 +16,7 @@ Single PostgreSQL 15 instance with PostGIS extension. Two schemas with strict wr
 
 ## Platform Schema
 
-Owned by Platform Service. Manages users, authentication, courts, availability, pricing, feature flags, support, verification, audit logs, and court owner settings.
+Owned by Platform Service. Manages users, authentication, courts, availability, pricing, feature flags, support, verification, audit logs, court owner settings, and security monitoring.
 
 ### `users`
 
@@ -26,7 +26,7 @@ Owned by Platform Service. Manages users, authentication, courts, availability, 
 | email | VARCHAR(255) | NOT NULL, UNIQUE | |
 | name | VARCHAR(255) | NOT NULL | |
 | phone | VARCHAR(50) | | |
-| role | VARCHAR(20) | NOT NULL, CHECK (role IN ('CUSTOMER', 'COURT_OWNER', 'PLATFORM_ADMIN')) | |
+| role | VARCHAR(20) | NOT NULL, CHECK (role IN ('CUSTOMER', 'COURT_OWNER', 'SUPPORT_AGENT', 'PLATFORM_ADMIN')) | |
 | language | VARCHAR(5) | NOT NULL DEFAULT 'el', CHECK (language IN ('el', 'en')) | |
 | verified | BOOLEAN | NOT NULL DEFAULT FALSE | Court owner verification status |
 | stripe_connect_account_id | VARCHAR(255) | | Stripe Connect account ID (court owners) |
@@ -518,6 +518,82 @@ Default settings applied to new courts created by a court owner (Req 15a.10–15
 
 ---
 
+### `security_alerts`
+
+Security monitoring and abuse detection alerts (Req 32).
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | UUID | PK, DEFAULT gen_random_uuid() | |
+| alert_type | VARCHAR(50) | NOT NULL, CHECK IN ('BOOKING_ABUSE','PAYMENT_FRAUD','SCRAPING','BRUTE_FORCE','SUSPICIOUS_LOGIN','RATE_LIMIT_EXCEEDED','WEBHOOK_REPLAY','ACCOUNT_TAKEOVER') | |
+| severity | VARCHAR(10) | NOT NULL, CHECK IN ('LOW','MEDIUM','HIGH','CRITICAL') | |
+| user_id | UUID | FK → users(id) | NULL for IP-based alerts without identified user |
+| ip_address | VARCHAR(45) | | Source IP address |
+| description | TEXT | NOT NULL | Human-readable alert description |
+| metadata | JSONB | | Alert-specific structured data (thresholds, patterns, request details) |
+| status | VARCHAR(20) | NOT NULL DEFAULT 'OPEN', CHECK IN ('OPEN','ACKNOWLEDGED','INVESTIGATING','RESOLVED','FALSE_POSITIVE') | |
+| acknowledged_by | UUID | FK → users(id) | PLATFORM_ADMIN who acknowledged |
+| resolved_by | UUID | FK → users(id) | PLATFORM_ADMIN who resolved |
+| resolution_notes | TEXT | | Notes on resolution |
+| created_at | TIMESTAMPTZ | NOT NULL DEFAULT NOW() | |
+| acknowledged_at | TIMESTAMPTZ | | |
+| resolved_at | TIMESTAMPTZ | | |
+
+**Indexes:**
+- `idx_security_alerts_status` — on `status` WHERE `status IN ('OPEN','ACKNOWLEDGED','INVESTIGATING')`
+- `idx_security_alerts_severity` — on `severity` WHERE `status NOT IN ('RESOLVED','FALSE_POSITIVE')`
+- `idx_security_alerts_user_id` — on `user_id` WHERE `user_id IS NOT NULL`
+- `idx_security_alerts_ip` — on `ip_address` WHERE `ip_address IS NOT NULL`
+- `idx_security_alerts_type` — on `alert_type`
+- `idx_security_alerts_created` — on `created_at`
+
+**Note:** This table is append-only for the alert record itself. Only `status`, `acknowledged_by`, `resolved_by`, `resolution_notes`, `acknowledged_at`, and `resolved_at` may be updated.
+
+---
+
+### `ip_blocklist`
+
+Blocked IP addresses for abuse prevention (Req 32).
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | UUID | PK, DEFAULT gen_random_uuid() | |
+| ip_address | VARCHAR(45) | NOT NULL | IPv4 or IPv6 address |
+| cidr_range | VARCHAR(49) | | Optional CIDR notation for range blocks (e.g., '192.168.1.0/24') |
+| reason | VARCHAR(255) | NOT NULL | Reason for blocking |
+| blocked_by | UUID | NOT NULL, FK → users(id) | PLATFORM_ADMIN who blocked |
+| related_alert_id | UUID | FK → security_alerts(id) | Optional link to triggering alert |
+| expires_at | TIMESTAMPTZ | | NULL = permanent block |
+| created_at | TIMESTAMPTZ | NOT NULL DEFAULT NOW() | |
+
+**Indexes:**
+- `idx_ip_blocklist_ip` — UNIQUE on `ip_address`
+- `idx_ip_blocklist_expires` — on `expires_at` WHERE `expires_at IS NOT NULL` (for cleanup/expiry jobs)
+
+---
+
+### `failed_auth_attempts`
+
+Tracks failed authentication attempts for brute-force detection (Req 32, Req 33).
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | UUID | PK, DEFAULT gen_random_uuid() | |
+| ip_address | VARCHAR(45) | NOT NULL | |
+| email | VARCHAR(255) | | Target email (if provided in attempt) |
+| attempt_count | INTEGER | NOT NULL DEFAULT 1 | Rolling count within window |
+| window_start | TIMESTAMPTZ | NOT NULL DEFAULT NOW() | Start of the current counting window |
+| locked_until | TIMESTAMPTZ | | If set, all auth attempts from this IP are rejected until this time |
+| created_at | TIMESTAMPTZ | NOT NULL DEFAULT NOW() | |
+| updated_at | TIMESTAMPTZ | NOT NULL DEFAULT NOW() | |
+
+**Indexes:**
+- `idx_failed_auth_ip` — on `ip_address`
+- `idx_failed_auth_email` — on `email` WHERE `email IS NOT NULL`
+- `idx_failed_auth_locked` — on `locked_until` WHERE `locked_until IS NOT NULL`
+
+---
+
 ## Transaction Schema
 
 Owned by Transaction Service. Manages bookings, payments, notifications, device tokens, audit logs, waitlists, open matches, split payments, and scheduled jobs.
@@ -906,6 +982,8 @@ users (1) ──── (1) preferences
 users (1) ──── (N) skill_levels
 users (1) ──── (N) support_tickets
 users (1) ──── (N) promo_codes               [⏳ Phase 2]
+users (1) ──── (N) security_alerts            [user_id, acknowledged_by, resolved_by]
+users (1) ──── (N) ip_blocklist               [blocked_by]
 
 courts (1) ──── (N) availability_windows
 courts (1) ──── (N) availability_overrides
@@ -915,6 +993,8 @@ courts (1) ──── (N) court_ratings            [⏳ Phase 2]
 courts (1) ──── (N) special_date_pricing     [⏳ Phase 2]
 courts (1) ──── (N) court_owner_audit_logs
 courts (1) ──── (N) reminder_rules
+
+security_alerts (1) ──── (0..1) ip_blocklist  [related_alert_id]
 
 support_tickets (1) ──── (N) support_messages
 support_messages (1) ──── (N) support_attachments
