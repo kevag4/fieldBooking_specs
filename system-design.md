@@ -240,28 +240,35 @@ Shared PostgreSQL instance, separate schemas with strict write boundaries:
 ┌─────────────────────────────────────────────────────────────┐
 │                    PostgreSQL + PostGIS                       │
 │                                                              │
-│  ┌──────────────────────┐    ┌────────────────────────────┐ │
-│  │  platform schema      │    │  transaction schema         │ │
-│  │  (owned by Platform)  │    │  (owned by Transaction)     │ │
-│  │                       │    │                             │ │
-│  │  users                │    │  bookings                   │ │
-│  │  roles                │    │  payments                   │ │
-│  │  refresh_tokens       │    │  notifications              │ │
-│  │  courts               │    │  device_tokens              │ │
-│  │  availability_windows │    │  audit_logs                 │ │
-│  │  favorites            │    │  waitlists                  │ │
-│  │  preferences          │    │  open_matches               │ │
-│  │  oauth_providers      │    │  split_payments             │ │
-│  │  skill_levels         │    │  scheduled_jobs             │ │
-│  │  court_ratings        │    │                             │ │
-│  │  promo_codes          │    │                             │ │
-│  │  pricing_rules        │    │                             │ │
-│  │  translations         │    │                             │ │
-│  │  feature_flags        │    │                             │ │
-│  │  support_tickets      │    │                             │ │
-│  │  support_messages     │    │                             │ │
-│  │  support_attachments  │    │                             │ │
-│  └──────────────────────┘    └────────────────────────────┘ │
+│  ┌───────────────────────────┐  ┌────────────────────────────┐ │
+│  │  platform schema          │  │  transaction schema         │ │
+│  │  (owned by Platform)      │  │  (owned by Transaction)     │ │
+│  │                           │  │                             │ │
+│  │  users                    │  │  bookings                   │ │
+│  │  oauth_providers          │  │  payments                   │ │
+│  │  refresh_tokens           │  │  audit_logs                 │ │
+│  │  verification_requests    │  │  notifications              │ │
+│  │  courts                   │  │  device_tokens              │ │
+│  │  availability_windows     │  │  waitlists ⏳               │ │
+│  │  availability_overrides   │  │  open_matches ⏳            │ │
+│  │  favorites                │  │  match_players ⏳           │ │
+│  │  preferences              │  │  match_join_requests ⏳     │ │
+│  │  skill_levels             │  │  match_messages ⏳          │ │
+│  │  court_ratings ⏳         │  │  split_payments ⏳          │ │
+│  │  pricing_rules            │  │  split_payment_shares ⏳    │ │
+│  │  special_date_pricing ⏳  │  │  scheduled_jobs (Quartz)    │ │
+│  │  cancellation_tiers       │  │                             │ │
+│  │  promo_codes ⏳           │  │                             │ │
+│  │  translations             │  │                             │ │
+│  │  feature_flags            │  │                             │ │
+│  │  support_tickets          │  │                             │ │
+│  │  support_messages         │  │                             │ │
+│  │  support_attachments      │  │                             │ │
+│  │  court_owner_audit_logs   │  │                             │ │
+│  │  reminder_rules           │  │                             │ │
+│  │  court_owner_notif_prefs  │  │                             │ │
+│  │  court_defaults           │  │                             │ │
+│  └───────────────────────────┘  └────────────────────────────┘ │
 │                                                              │
 │  Cross-schema: Transaction has READ-ONLY access to Platform  │
 │  via database views (v_court_summary, v_user_basic)          │

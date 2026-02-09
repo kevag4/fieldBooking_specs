@@ -255,8 +255,8 @@ graph TB
 - **Clustering**: Quartz SHALL use JDBC-based job store with `org.quartz.jobStore.isClustered=true` to ensure only one pod executes each scheduled job when running multiple Transaction Service replicas
 
 **Database Ownership (Shared PostgreSQL, Separate Schemas)**
-- Platform Service schema: users, roles, refresh_tokens, courts, availability_windows, favorites, preferences, oauth_providers, skill_levels, court_ratings, promo_codes, pricing_rules, translations, feature_flags, support_tickets, support_messages, support_attachments, subscriptions, subscription_invoices
-- Transaction Service schema: bookings, payments, notifications, device_tokens, audit_logs, waitlists, open_matches, split_payments, scheduled_jobs
+- Platform Service schema: users, oauth_providers, refresh_tokens, verification_requests, courts, availability_windows, availability_overrides, favorites, preferences, skill_levels, court_ratings ⏳, pricing_rules, special_date_pricing ⏳, cancellation_tiers, promo_codes ⏳, translations, feature_flags, support_tickets, support_messages, support_attachments, court_owner_audit_logs, reminder_rules, court_owner_notification_preferences, court_defaults
+- Transaction Service schema: bookings, payments, audit_logs, notifications, device_tokens, waitlists ⏳, open_matches ⏳, match_players ⏳, match_join_requests ⏳, match_messages ⏳, split_payments ⏳, split_payment_shares ⏳, scheduled_jobs (Quartz)
 - **Cross-schema access rule**: Transaction Service schema has read-only access to Platform Service schema through defined database views (e.g., `platform.v_court_summary`, `platform.v_user_basic`). This avoids HTTP round-trips for simple data lookups (receipt generation, booking display) while maintaining strict write ownership boundaries. Platform Service owns all write operations to its schema.
 - Read replica used by Platform Service for analytics queries to avoid impacting booking performance
 
