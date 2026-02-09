@@ -157,9 +157,34 @@ Admin Web  ──REST──► NGINX ──► Platform Service
                            ──► Transaction Service
 
 Transaction Service ──internal HTTP──► Platform Service
-  (court validation, pricing rules, player skill levels)
+  (court validation, pricing calculation)
   Auth: mTLS via Istio (staging/prod), API key (dev/test)
 ```
+
+#### Internal Service-to-Service API
+
+Transaction Service calls Platform Service for operations that involve business logic. These endpoints use the `/internal/*` path prefix, are **not** exposed through NGINX Ingress, and are only reachable within the Kubernetes cluster network.
+
+| Lookup | Method | Path | Rationale |
+|--------|--------|------|-----------|
+| Court availability validation | GET | `/internal/courts/{courtId}/validate-slot?date=&startTime=&endTime=` | Involves availability windows, overrides, and existing booking conflict checks |
+| Pricing calculation | GET | `/internal/courts/{courtId}/calculate-price?date=&startTime=&endTime=` | Involves base price, pricing rules, special date pricing, and promo validation |
+
+Simple read-only lookups use **cross-schema database views** instead of HTTP calls (see [Data Ownership](#5-data-ownership)):
+
+| Lookup | View | Fields |
+|--------|------|--------|
+| Court summary | `v_court_summary` | id, owner_id, name, type, duration, capacity, base_price, timezone, confirmation_mode, version |
+| User basic info | `v_user_basic` | id, email, name, phone, role, language, stripe_connect_account_id, stripe_connect_status, stripe_customer_id, vat_registered, vat_number, status |
+| Cancellation policy tiers | `v_court_cancellation_tiers` | court_id, threshold_hours, refund_percent, sort_order |
+| Player skill level | `v_user_skill_level` | user_id, court_type, level |
+
+#### Internal API Authentication
+
+| Environment | Mechanism | Details |
+|-------------|-----------|---------|
+| dev / test | API key | Shared secret via `INTERNAL_API_KEY` env var. Passed as `X-Internal-Api-Key` header. Validated by a Spring Security filter on `/internal/**` paths. |
+| staging / prod | mTLS | Istio sidecar handles mutual TLS between pods. No application-level auth needed — Istio `AuthorizationPolicy` restricts `/internal/**` to Transaction Service's service account. |
 
 ### Asynchronous (Kafka Events)
 
@@ -178,18 +203,20 @@ Formal event schemas are defined in [`docs/api/kafka-event-contracts.json`](docs
 │  pricing/policy ◄───┤                    │  (pricing, avail,   │
 │  cache update       │    Kafka ◄─────────┤   policy, deletion) │
 │                     │                    │  analytics-events   │
-│                     │                    │                     │
+│                     │                    │  notification-events│
 │  security-events ───┼──► Kafka ────────►─┤  security alerts    │
 │                     │                    │  security-events ───┤
 └────────────────────┘                    └────────────────────┘
 ```
+
+Both services publish to `notification-events`: Transaction Service for booking/payment/match/waitlist/split-payment notifications; Platform Service for verification, subscription, support, weather, and reminder notifications. Transaction Service's notification processor consumes all events regardless of source.
 
 #### Topics and Partitioning
 
 | Topic | Partition Key | Producer | Consumer(s) | Events | Purpose |
 |-------|--------------|----------|-------------|--------|---------|
 | `booking-events` | `courtId` | Transaction | Platform | BOOKING_CREATED, BOOKING_CONFIRMED, BOOKING_CANCELLED, BOOKING_MODIFIED, BOOKING_COMPLETED, SLOT_HELD, SLOT_RELEASED | Availability cache invalidation, WebSocket broadcasts |
-| `notification-events` | `userId` | Transaction | Transaction | NOTIFICATION_REQUESTED | Notification dispatch routing (FCM, WebSocket, SendGrid, email) |
+| `notification-events` | `userId` | Both | Transaction | NOTIFICATION_REQUESTED | Notification dispatch routing (FCM, WebSocket, SendGrid, email) |
 | `court-update-events` | `courtId` | Platform | Transaction | COURT_UPDATED, PRICING_UPDATED, AVAILABILITY_UPDATED, CANCELLATION_POLICY_UPDATED, COURT_DELETED | Pricing/availability/policy sync to Transaction Service |
 | `match-events` | `matchId` | Transaction | Platform | MATCH_CREATED, MATCH_UPDATED, MATCH_CLOSED | Open match map display and search index updates |
 | `waitlist-events` | `courtId` | Transaction | Transaction | WAITLIST_SLOT_FREED, WAITLIST_HOLD_EXPIRED | FIFO waitlist processing on cancellations |
@@ -233,6 +260,20 @@ Every Kafka message value follows a common envelope schema:
                         └─────────────────────────────────────┘
 ```
 
+#### Availability Update Latency Budget (Req 19.20 — 2-second SLA)
+
+The end-to-end availability propagation chain must complete within 2 seconds:
+
+| Step | Target | Notes |
+|------|--------|-------|
+| Transaction Service → Kafka produce | ≤ 150ms | Upstash Kafka HTTPS produce |
+| Kafka → Platform Service consume | ≤ 200ms | Upstash Kafka HTTPS poll interval |
+| Redis cache invalidation | ≤ 50ms | Managed Redis, same VPC |
+| WebSocket broadcast via Redis Pub/Sub | ≤ 100ms | Pod-to-pod via Redis |
+| **Total budget** | **≤ 500ms typical, ≤ 1.5s p95** | 500ms headroom for spikes |
+
+Monitoring: `availability_update_latency_seconds` histogram metric (measured from Kafka event timestamp to WebSocket broadcast). Grafana alert at p95 > 1.5s. If Upstash HTTPS latency proves insufficient, migration path to Strimzi (self-hosted Kafka on DOKS) is the documented fallback.
+
 ### Scheduled Jobs (Quartz in Transaction Service)
 
 - Pending booking confirmation timeouts
@@ -240,7 +281,19 @@ Every Kafka message value follows a common envelope schema:
 - Waitlist slot hold expiration
 - Recurring booking creation (weekly advance)
 - Booking reminders
+- Payment reconciliation (daily — see below)
 - Clustered via JDBC job store (`isClustered=true`)
+
+#### Payment Reconciliation Job
+
+A daily Quartz job (`PaymentReconciliationJob`) reconciles payment state between the platform and Stripe:
+
+1. Queries bookings with `payment_status = 'AUTHORIZED'` older than 30 minutes — captures or cancels the PaymentIntent based on booking status
+2. Queries Stripe for PaymentIntents in `requires_capture` state with no matching booking — cancels them
+3. Checks for bookings marked `CONFIRMED` with `payment_status = 'PENDING'` — flags for manual review
+4. Logs all reconciliation actions to `transaction.audit_logs`
+
+This catches edge cases where webhook delivery fails or the application crashes between payment authorization and booking confirmation.
 
 ## 5. Data Ownership
 

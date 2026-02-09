@@ -905,6 +905,7 @@ Quartz Scheduler JDBC job store tables. Transaction Service uses clustered Quart
 - Recurring booking creation (weekly advance)
 - Booking reminders
 - No-show auto-flag window
+- Payment reconciliation (daily — reconciles payment state between platform and Stripe)
 
 Standard Quartz tables (`QRTZ_JOB_DETAILS`, `QRTZ_TRIGGERS`, `QRTZ_CRON_TRIGGERS`, `QRTZ_SIMPLE_TRIGGERS`, `QRTZ_FIRED_TRIGGERS`, `QRTZ_LOCKS`, etc.) are created by Quartz's built-in DDL scripts for PostgreSQL.
 
@@ -964,6 +965,34 @@ FROM platform.users
 WHERE status = 'ACTIVE';
 
 GRANT SELECT ON platform.v_user_basic TO transaction_service_role;
+```
+
+### `v_court_cancellation_tiers`
+
+```sql
+CREATE VIEW platform.v_court_cancellation_tiers AS
+SELECT
+    court_id,
+    threshold_hours,
+    refund_percent,
+    sort_order
+FROM platform.cancellation_tiers
+ORDER BY court_id, sort_order;
+
+GRANT SELECT ON platform.v_court_cancellation_tiers TO transaction_service_role;
+```
+
+### `v_user_skill_level`
+
+```sql
+CREATE VIEW platform.v_user_skill_level AS
+SELECT
+    user_id,
+    court_type,
+    level
+FROM platform.skill_levels;
+
+GRANT SELECT ON platform.v_user_skill_level TO transaction_service_role;
 ```
 
 ---

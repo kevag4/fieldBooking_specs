@@ -210,9 +210,9 @@
     },
 
     "notification-events": {
-      "description": "Notification dispatch events published by Transaction Service. Consumed internally by Transaction Service's notification processor which routes to FCM (push), WebSocket (in-app), or SendGrid (email). Partitioned by userId to guarantee notification ordering per user.",
+      "description": "Notification dispatch events published by both services. Consumed by Transaction Service's notification processor which routes to FCM (push), WebSocket (in-app), or SendGrid (email). Platform Service publishes notifications it owns (VERIFICATION_APPROVED, VERIFICATION_REJECTED, SUBSCRIPTION_EXPIRING, SUBSCRIPTION_EXPIRED, SUBSCRIPTION_RENEWED, SUPPORT_TICKET_UPDATED, WEATHER_ALERT, REMINDER_ALERT). Transaction Service publishes all booking/payment/match/waitlist/split-payment notifications. Partitioned by userId to guarantee notification ordering per user.",
       "partitionKey": "userId",
-      "producer": "transaction-service",
+      "producer": "both",
       "consumers": ["transaction-service"],
       "requirements": ["Req 13.4–13.6", "Req 13.12–13.14"],
       "events": {

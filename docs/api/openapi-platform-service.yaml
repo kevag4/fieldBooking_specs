@@ -66,6 +66,8 @@ tags:
     description: Court owner verification management
   - name: Security
     description: Security monitoring, abuse detection, and IP blocklist management (PLATFORM_ADMIN, SUPPORT_AGENT read-only)
+  - name: Internal
+    description: Internal service-to-service endpoints. Not exposed through NGINX Ingress. Authenticated via X-Internal-Api-Key (dev/test) or mTLS via Istio (staging/prod).
 
 security:
   - BearerAuth: []
@@ -2701,6 +2703,146 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '403':
           $ref: '#/components/responses/Forbidden'
+
+
+  # ─── Internal Service-to-Service ────────────────────────────────────────────
+  /internal/courts/{courtId}/validate-slot:
+    get:
+      tags: [Internal]
+      summary: Validate court slot availability
+      description: |
+        Internal endpoint called by Transaction Service to validate that a court slot is available
+        for booking. Checks availability windows, overrides, and existing booking conflicts.
+        Not exposed through NGINX Ingress — only reachable within the Kubernetes cluster.
+        Auth: X-Internal-Api-Key header (dev/test), mTLS via Istio (staging/prod).
+      operationId: validateSlot
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/CourtId'
+        - name: date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: startTime
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^\d{2}:\d{2}$'
+        - name: endTime
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^\d{2}:\d{2}$'
+      responses:
+        '200':
+          description: Slot validation result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [available]
+                properties:
+                  available:
+                    type: boolean
+                    description: Whether the slot is available for booking
+                  reason:
+                    type: string
+                    nullable: true
+                    description: Reason if not available (e.g., OUTSIDE_AVAILABILITY_WINDOW, OVERRIDE_BLOCKED, SLOT_CONFLICT, COURT_NOT_VISIBLE)
+                  conflictingBookingId:
+                    type: string
+                    format: uuid
+                    nullable: true
+                    description: ID of the conflicting booking, if any
+        '404':
+          description: Court not found
+
+  /internal/courts/{courtId}/calculate-price:
+    get:
+      tags: [Internal]
+      summary: Calculate booking price
+      description: |
+        Internal endpoint called by Transaction Service to calculate the price for a booking slot.
+        Applies base price, pricing rules (peak/off-peak multipliers), and special date pricing.
+        Not exposed through NGINX Ingress.
+      operationId: calculatePrice
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/CourtId'
+        - name: date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: startTime
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^\d{2}:\d{2}$'
+        - name: endTime
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^\d{2}:\d{2}$'
+        - name: promoCode
+          in: query
+          schema:
+            type: string
+          description: Optional promo code to validate and apply
+      responses:
+        '200':
+          description: Price calculation result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [basePriceCents, finalPriceCents, multiplier]
+                properties:
+                  basePriceCents:
+                    type: integer
+                    description: Court's base price in euro cents
+                  multiplier:
+                    type: number
+                    format: double
+                    description: Applied pricing rule multiplier (1.0 if no rule matches)
+                  multiplierLabel:
+                    type: string
+                    nullable: true
+                    description: Label of the applied pricing rule (e.g., 'Peak', 'Off-Peak')
+                  specialDateMultiplier:
+                    type: number
+                    format: double
+                    nullable: true
+                    description: Special date pricing multiplier, if applicable
+                  specialDateLabel:
+                    type: string
+                    nullable: true
+                  subtotalCents:
+                    type: integer
+                    description: Price after multipliers, before promo discount
+                  promoDiscountCents:
+                    type: integer
+                    description: Promo code discount amount (0 if no promo)
+                  promoCodeValid:
+                    type: boolean
+                    nullable: true
+                    description: Whether the provided promo code is valid (null if no promo code provided)
+                  promoCodeError:
+                    type: string
+                    nullable: true
+                    description: Error reason if promo code is invalid
+                  finalPriceCents:
+                    type: integer
+                    description: Final price after all multipliers and discounts
+        '404':
+          description: Court not found
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
