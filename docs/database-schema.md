@@ -9,16 +9,32 @@ Single PostgreSQL 15 instance with PostGIS extension. Two schemas with strict wr
 - **Migrations**: Flyway (each service manages its own schema)
 - **Currency**: All monetary amounts stored as INTEGER in euro cents (e.g., €25.50 = 2550). Matches API contracts and Stripe convention. Avoids floating-point rounding.
 - **Languages**: el (Greek), en (English)
-- **Timezone handling**: All timestamps stored as `TIMESTAMPTZ` (UTC). Court-level timezone stored for display.
 - **Phase 2 tables**: Tables for Phase 2 features are included but marked with ⏳. They should be created in initial migrations to avoid ALTER TABLE later.
+
+### Timezone Handling
+
+| Column Type | Storage | Example | Usage |
+|-------------|---------|---------|-------|
+| `TIMESTAMPTZ` | UTC (PostgreSQL converts automatically) | `2026-02-15T10:00:00Z` | Event timestamps, audit logs, created_at, updated_at |
+| `DATE` | Court-local date | `2026-02-15` | Booking date (represents "Feb 15 at this court") |
+| `TIME` | Court-local time | `10:00:00` | Booking start/end time (represents "10 AM at this court") |
+| `VARCHAR` (timezone) | IANA timezone ID | `Europe/Athens` | Court's operating timezone |
+
+**Rationale:**
+- `TIMESTAMPTZ` for all event timestamps ensures consistent UTC storage and automatic conversion
+- `DATE` + `TIME` for bookings preserves the "local meaning" — a 10:00 AM booking stays at 10:00 AM even across DST transitions
+- Court's `timezone` column enables correct conversion when calculating `Instant` for reminders/scheduling
+- Java services use `Instant` for all `TIMESTAMPTZ` columns, `LocalDate`/`LocalTime` for booking date/time
+
+**DST Handling:**
+- Booking times in DST gaps (e.g., 02:30 when clocks skip 02:00→03:00) are rejected at API level
+- Reminder jobs calculate `Instant` at runtime: `ZonedDateTime.of(date, time, courtZone).toInstant()`
 
 ---
 
 ## Platform Schema
 
-Owned by Platform Service. Manages users, authentication, courts, availability, pricing, feature flags, support, verification, audit logs, court owner settings, and security monitoring.
-
-### `users`
+Owned by Platform Service. Manages users, authentication, courts, availability, pricing, feature flags, support, verification, audit logs, court owner settings, and security monitoring.### `users`
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|

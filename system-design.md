@@ -288,7 +288,47 @@ The end-to-end availability propagation chain must complete within 2 seconds:
 | WebSocket broadcast via Redis Pub/Sub | ≤ 100ms | Pod-to-pod via Redis |
 | **Total budget** | **≤ 500ms typical, ≤ 1.5s p95** | 500ms headroom for spikes |
 
-Monitoring: `availability_update_latency_seconds` histogram metric (measured from Kafka event timestamp to WebSocket broadcast). Grafana alert at p95 > 1.5s. If Upstash HTTPS latency proves insufficient, migration path to Strimzi (self-hosted Kafka on DOKS) is the documented fallback.
+**Monitoring:**
+- `availability_update_latency_seconds` histogram metric (measured from Kafka event timestamp to WebSocket broadcast)
+- `kafka_produce_latency_seconds` histogram (Upstash HTTPS produce time)
+- `kafka_consume_lag_seconds` gauge (consumer lag per partition)
+- Grafana alert at p95 > 1.5s
+
+**Strimzi Migration Criteria:**
+
+If Upstash Kafka proves insufficient, migrate to Strimzi (self-hosted Kafka on DOKS). Trigger migration when ANY of these conditions persist for 7+ consecutive days:
+
+| Metric | Threshold | Rationale |
+|--------|-----------|-----------|
+| `availability_update_latency_seconds` p95 | > 1.5s | SLA breach risk |
+| `availability_update_latency_seconds` p99 | > 2.0s | Hard SLA violation |
+| `kafka_produce_latency_seconds` p95 | > 300ms | Upstash HTTPS overhead |
+| `kafka_consume_lag_seconds` | > 5s sustained | Consumer falling behind |
+| Upstash monthly cost | > €150/month | Cost parity with self-hosted |
+| Upstash availability | < 99.9% monthly | Reliability concern |
+
+**Migration Runbook:** See `infrastructure/docs/kafka-migration-runbook.md` (to be created in Phase 1).
+
+#### Race Condition Mitigation
+
+Stale availability can cause double-bookings. Mitigations:
+
+1. **Optimistic Locking**: Bookings table has `version` column. Booking creation uses `WHERE version = :expected` to detect concurrent modifications.
+
+2. **Slot Hold Mechanism**: Before payment, Transaction Service holds the slot for 5 minutes via `SLOT_HELD` event. Other booking attempts for the same slot return `409 Conflict`.
+
+3. **Database-Level Uniqueness**: Unique constraint on `(court_id, date, start_time, end_time, status)` WHERE `status NOT IN ('CANCELLED', 'REJECTED')` prevents duplicate confirmed bookings.
+
+4. **Idempotency Keys**: All booking creation requests require `X-Idempotency-Key` header. Duplicate requests return the original response.
+
+5. **Cache Invalidation on Conflict**: If a booking fails due to conflict, Platform Service immediately invalidates the availability cache for that court+date.
+
+```sql
+-- Unique constraint preventing double-bookings
+CREATE UNIQUE INDEX uq_bookings_slot_active 
+ON transaction.bookings (court_id, date, start_time, end_time) 
+WHERE status NOT IN ('CANCELLED', 'REJECTED');
+```
 
 ### Scheduled Jobs (Quartz in Transaction Service)
 
@@ -610,3 +650,153 @@ Developer ──► GitHub PR ──► GitHub Actions Pipeline:
 | Database | Single PG instance, separate schemas | Cost-effective, cross-schema views for reads |
 | Real-time | WebSocket + Redis Pub/Sub | Horizontal scaling across pods |
 | API contracts | OpenAPI 3.1 + Kafka JSON Schema (contract-first) | Code generation for clients, CI validation. See [`docs/api/`](docs/api/README.md) |
+
+## 12. Cross-Cutting Concerns
+
+### Timezone Handling
+
+Courts operate in local timezones (primarily `Europe/Athens`), but all internal storage and communication uses UTC. This prevents timezone bugs and simplifies cross-service communication.
+
+**Storage Strategy:**
+- All `TIMESTAMPTZ` columns store UTC (PostgreSQL default behavior)
+- `Instant` (Java) / `DateTime` (Dart) for all timestamp fields
+- Court's `timezone` column stores the IANA timezone ID (e.g., `Europe/Athens`)
+- Booking `date` and `start_time`/`end_time` are stored as `DATE` and `TIME` in the court's local timezone (not UTC) because they represent "10:00 AM at this court" regardless of DST changes
+
+**Conversion Rules:**
+
+| Context | Storage | Display | Conversion |
+|---------|---------|---------|------------|
+| Event timestamps | `Instant` (UTC) | User's locale | Client converts using device timezone |
+| Booking date/time | `DATE` + `TIME` (court-local) | Court's timezone | No conversion needed for display |
+| Kafka event timestamps | ISO 8601 UTC | N/A | Used for latency measurement |
+| Audit log timestamps | `Instant` (UTC) | Admin's locale | Client converts |
+| Scheduled job triggers | `Instant` (UTC) | N/A | Quartz uses UTC internally |
+
+**Booking Time Calculation Example:**
+```java
+// Court in Europe/Athens, booking at 10:00 local time
+LocalDate bookingDate = LocalDate.of(2026, 3, 15);
+LocalTime startTime = LocalTime.of(10, 0);
+ZoneId courtZone = ZoneId.of("Europe/Athens");
+
+// Convert to Instant for comparison/scheduling
+ZonedDateTime courtLocal = ZonedDateTime.of(bookingDate, startTime, courtZone);
+Instant bookingStart = courtLocal.toInstant();  // Store this for reminders, etc.
+
+// For display, always use court's timezone
+String displayTime = startTime.format(DateTimeFormatter.ofPattern("HH:mm"));  // "10:00"
+```
+
+**DST Handling:**
+- Bookings are stored as local date+time, so "10:00 AM every Monday" remains 10:00 AM even across DST transitions
+- Reminder jobs calculate the `Instant` at runtime using the court's current timezone rules
+- If a booking falls in a DST gap (e.g., 02:30 when clocks skip from 02:00 to 03:00), reject with `INVALID_TIME_DST_GAP` error
+
+**Shared Utilities:** See `DateTimeUtils` in `court-booking-common` library.
+
+### Idempotency
+
+All state-changing operations must be idempotent to handle retries, network failures, and duplicate webhook deliveries.
+
+**Client-Generated Idempotency Keys:**
+
+| Operation | Header | Key Format | TTL |
+|-----------|--------|------------|-----|
+| Booking creation | `X-Idempotency-Key` | UUID v4 | 24 hours |
+| Payment capture | `X-Idempotency-Key` | UUID v4 | 24 hours |
+| Rating submission | `X-Idempotency-Key` | UUID v4 | 24 hours |
+| Support ticket creation | `X-Idempotency-Key` | UUID v4 | 24 hours |
+| Promo code redemption | N/A (uses `bookingId`) | UUID | Permanent |
+
+**Implementation:**
+
+```java
+// Idempotency key storage (Redis)
+public class IdempotencyService {
+    private static final Duration TTL = Duration.ofHours(24);
+    
+    public Optional<Response> checkIdempotency(String key) {
+        String cached = redis.get("idempotency:" + key);
+        return cached != null ? Optional.of(deserialize(cached)) : Optional.empty();
+    }
+    
+    public void storeResponse(String key, Response response) {
+        redis.setex("idempotency:" + key, TTL.toSeconds(), serialize(response));
+    }
+}
+```
+
+**Kafka Event Idempotency:**
+
+Consumers use `eventId` for deduplication:
+
+```java
+public class EventConsumer {
+    public void processEvent(EventEnvelope<?> envelope) {
+        String dedupeKey = "event:" + envelope.getEventId();
+        if (redis.setnx(dedupeKey, "1") == 0) {
+            log.info("Duplicate event ignored: {}", envelope.getEventId());
+            return;  // Already processed
+        }
+        redis.expire(dedupeKey, Duration.ofDays(7).toSeconds());
+        
+        // Process event...
+    }
+}
+```
+
+**Stripe Webhook Idempotency:**
+
+Stripe webhooks include `event.id`. Store processed event IDs to prevent replay:
+
+```java
+public void handleStripeWebhook(Event event) {
+    if (processedWebhooks.contains(event.getId())) {
+        return;  // Already processed
+    }
+    // Process webhook...
+    processedWebhooks.add(event.getId(), TTL_7_DAYS);
+}
+```
+
+**Database-Level Idempotency:**
+
+- `bookings.idempotency_key` — UNIQUE constraint prevents duplicate bookings
+- `promo_code_redemptions.(promo_code_id, booking_id)` — UNIQUE constraint prevents double redemption
+- `payments.stripe_payment_intent_id` — UNIQUE constraint prevents duplicate payment records
+
+**Shared Utilities:** See `IdempotencyUtils` in `court-booking-common` library.
+
+### Error Handling
+
+Consistent error response format across both services:
+
+```json
+{
+  "error": "ERROR_CODE",
+  "message": "Human-readable message",
+  "details": {
+    "field": "fieldName",
+    "reason": "specific reason"
+  },
+  "traceId": "W3C trace ID for debugging",
+  "timestamp": "ISO 8601 UTC"
+}
+```
+
+**Error Code Categories:**
+
+| Prefix | Category | Example |
+|--------|----------|---------|
+| `AUTH_` | Authentication | `AUTH_TOKEN_EXPIRED`, `AUTH_INVALID_PROVIDER` |
+| `AUTHZ_` | Authorization | `AUTHZ_INSUFFICIENT_ROLE`, `AUTHZ_NOT_OWNER` |
+| `BOOKING_` | Booking operations | `BOOKING_SLOT_UNAVAILABLE`, `BOOKING_MINIMUM_NOTICE` |
+| `PAYMENT_` | Payment operations | `PAYMENT_CARD_DECLINED`, `PAYMENT_CAPTURE_FAILED` |
+| `COURT_` | Court operations | `COURT_NOT_FOUND`, `COURT_NOT_VISIBLE` |
+| `PROMO_` | Promo codes | `PROMO_EXPIRED`, `PROMO_USAGE_LIMIT_REACHED` |
+| `VALIDATION_` | Input validation | `VALIDATION_INVALID_FORMAT`, `VALIDATION_REQUIRED_FIELD` |
+| `RATE_LIMIT_` | Rate limiting | `RATE_LIMIT_EXCEEDED` |
+| `INTERNAL_` | Internal errors | `INTERNAL_SERVICE_ERROR`, `INTERNAL_TIMEOUT` |
+
+**Shared Utilities:** See exception classes in `court-booking-common` library.
