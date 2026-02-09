@@ -59,9 +59,9 @@ The Court Booking Platform is a multi-tenant sports court reservation system ser
 │   │ PostgreSQL    │  │ Redis  │  │ Upstash  │  │ DO Spaces      │  │
 │   │ + PostGIS     │  │ 2GB    │  │ Kafka    │  │ (S3-compat)    │  │
 │   │               │  │        │  │          │  │                │  │
-│   │ • platform    │  │ Cache  │  │ Events   │  │ Court images   │  │
-│   │   schema      │  │ Queues │  │ Async    │  │ Attachments    │  │
-│   │ • transaction │  │ PubSub │  │ Comms    │  │ Assets         │  │
+│   │ • platform    │  │ Cache  │  │ 6 topics │  │ Court images   │  │
+│   │   schema      │  │ Queues │  │ 20 event │  │ Attachments    │  │
+│   │ • transaction │  │ PubSub │  │ types    │  │ Assets         │  │
 │   │   schema      │  │ Flags  │  │          │  │                │  │
 │   └──────────────┘  └────────┘  └──────────┘  └────────────────┘  │
 │                                                                     │
@@ -157,6 +157,8 @@ Transaction Service ──internal HTTP──► Platform Service
 
 ### Asynchronous (Kafka Events)
 
+Formal event schemas are defined in [`docs/api/kafka-event-contracts.json`](docs/api/kafka-event-contracts.json) — the single source of truth for all async interfaces. Both services share event classes via `court-booking-common`.
+
 ```
 ┌────────────────────┐                    ┌────────────────────┐
 │ Transaction Service │                    │ Platform Service    │
@@ -166,16 +168,44 @@ Transaction Service ──internal HTTP──► Platform Service
 │  waitlist-events ───┼──► Kafka           │                     │
 │  match-events ──────┼──► Kafka ────────►─┤  map display update │
 │                     │                    │                     │
-│                     │    Kafka ◄─────────┤  court/pricing      │
-│  pricing updates ◄──┤                    │  updates            │
-│                     │    Kafka ◄─────────┤  analytics events   │
+│                     │    Kafka ◄─────────┤  court-update-events│
+│  pricing/policy ◄───┤                    │  (pricing, avail,   │
+│  cache update       │    Kafka ◄─────────┤   policy, deletion) │
+│                     │                    │  analytics-events   │
 └────────────────────┘                    └────────────────────┘
 ```
 
-Partitioning strategy:
-- `booking-events`: by `courtId` (ordering per court)
-- `notification-events`: by `userId` (ordering per user)
-- `analytics-events`: by `courtId` (court-level aggregation)
+#### Topics and Partitioning
+
+| Topic | Partition Key | Producer | Consumer(s) | Events | Purpose |
+|-------|--------------|----------|-------------|--------|---------|
+| `booking-events` | `courtId` | Transaction | Platform | BOOKING_CREATED, BOOKING_CONFIRMED, BOOKING_CANCELLED, BOOKING_MODIFIED, BOOKING_COMPLETED, SLOT_HELD, SLOT_RELEASED | Availability cache invalidation, WebSocket broadcasts |
+| `notification-events` | `userId` | Transaction | Transaction | NOTIFICATION_REQUESTED | Notification dispatch routing (FCM, WebSocket, SendGrid, email) |
+| `court-update-events` | `courtId` | Platform | Transaction | COURT_UPDATED, PRICING_UPDATED, AVAILABILITY_UPDATED, CANCELLATION_POLICY_UPDATED, COURT_DELETED | Pricing/availability/policy sync to Transaction Service |
+| `match-events` | `matchId` | Transaction | Platform | MATCH_CREATED, MATCH_UPDATED, MATCH_CLOSED | Open match map display and search index updates |
+| `waitlist-events` | `courtId` | Transaction | Transaction | WAITLIST_SLOT_FREED, WAITLIST_HOLD_EXPIRED | FIFO waitlist processing on cancellations |
+| `analytics-events` | `courtId` | Both | Platform | BOOKING_ANALYTICS, REVENUE_ANALYTICS, PROMO_CODE_REDEEMED | Dashboard metrics, revenue tracking, promo code usage |
+
+#### Event Envelope
+
+Every Kafka message value follows a common envelope schema:
+
+```json
+{
+  "eventId": "uuid — consumer-side idempotency key",
+  "eventType": "discriminator — determines payload schema",
+  "source": "platform-service | transaction-service",
+  "timestamp": "ISO 8601 UTC",
+  "traceId": "W3C Trace Context ID (Req 16.7)",
+  "spanId": "OpenTelemetry span ID",
+  "correlationId": "optional — links related events across topics",
+  "payload": { }
+}
+```
+
+- `eventId` enables consumer-side deduplication (at-least-once delivery with Upstash Kafka)
+- `traceId` / `spanId` enable end-to-end distributed tracing across async boundaries
+- `correlationId` links related events (e.g., a booking cancellation → waitlist slot freed → notification)
 
 ### Real-Time (WebSocket + Redis Pub/Sub)
 
@@ -372,7 +402,7 @@ Developer ──► GitHub PR ──► GitHub Actions Pipeline:
 | `court-booking-admin-web` | React, TypeScript | Court owner + platform admin portal |
 | `court-booking-qa` | pytest, Locust, Playwright, Patrol | Functional, stress, contract, UI tests |
 | `court-booking-infrastructure` | Terraform, Kubernetes, Helm | DigitalOcean provisioning, K8s manifests, Istio |
-| `court-booking-common` | Java 21 | Shared DTOs, event schemas, exceptions |
+| `court-booking-common` | Java 21 | Shared DTOs, Kafka event envelope + payload classes, exceptions |
 
 ## 11. Key Design Decisions
 
@@ -387,4 +417,4 @@ Developer ──► GitHub PR ──► GitHub Actions Pipeline:
 | Service mesh | Istio (staging + prod only) | mTLS, traffic management, observability |
 | Database | Single PG instance, separate schemas | Cost-effective, cross-schema views for reads |
 | Real-time | WebSocket + Redis Pub/Sub | Horizontal scaling across pods |
-| API contracts | OpenAPI 3.1 (contract-first) | Code generation for clients, CI validation |
+| API contracts | OpenAPI 3.1 + Kafka JSON Schema (contract-first) | Code generation for clients, CI validation. See [`docs/api/`](docs/api/README.md) |
