@@ -1132,6 +1132,879 @@ startupProbe:
   periodSeconds: 10
 ```
 
+## 13. Additional Implementation Patterns
+
+### Transactional Outbox Pattern (Reliable Event Publishing)
+
+For reliable event publishing to Kafka, use the transactional outbox pattern. This ensures events are published exactly once, even if the application crashes after database commit but before Kafka acknowledgment.
+
+**Outbox Table Schema:**
+
+```sql
+-- Flyway migration: V010__create_outbox_table.sql
+CREATE TABLE transaction.outbox_events (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    aggregate_type  VARCHAR(100) NOT NULL,  -- e.g., 'Booking', 'Payment'
+    aggregate_id    VARCHAR(100) NOT NULL,  -- e.g., booking ID
+    event_type      VARCHAR(100) NOT NULL,  -- e.g., 'BOOKING_CREATED'
+    topic           VARCHAR(100) NOT NULL,  -- Kafka topic name
+    partition_key   VARCHAR(100) NOT NULL,  -- Kafka partition key
+    payload         JSONB NOT NULL,         -- Event payload
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    published_at    TIMESTAMPTZ,            -- NULL until published
+    retry_count     INT NOT NULL DEFAULT 0,
+    last_error      TEXT
+);
+
+CREATE INDEX idx_outbox_unpublished ON transaction.outbox_events (created_at) 
+    WHERE published_at IS NULL;
+```
+
+**Outbox Entity:**
+
+```java
+@Entity
+@Table(name = "outbox_events", schema = "transaction")
+@Getter
+@NoArgsConstructor
+public class OutboxEvent {
+    
+    @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
+    private UUID id;
+    
+    @Column(name = "aggregate_type", nullable = false)
+    private String aggregateType;
+    
+    @Column(name = "aggregate_id", nullable = false)
+    private String aggregateId;
+    
+    @Column(name = "event_type", nullable = false)
+    private String eventType;
+    
+    @Column(nullable = false)
+    private String topic;
+    
+    @Column(name = "partition_key", nullable = false)
+    private String partitionKey;
+    
+    @Column(columnDefinition = "jsonb", nullable = false)
+    private String payload;
+    
+    @Column(name = "created_at", nullable = false)
+    private Instant createdAt;
+    
+    @Column(name = "published_at")
+    private Instant publishedAt;
+    
+    @Column(name = "retry_count", nullable = false)
+    private int retryCount;
+    
+    @Column(name = "last_error")
+    private String lastError;
+    
+    public static OutboxEvent create(String aggregateType, String aggregateId, 
+                                      String eventType, String topic, 
+                                      String partitionKey, Object payload) {
+        OutboxEvent event = new OutboxEvent();
+        event.aggregateType = aggregateType;
+        event.aggregateId = aggregateId;
+        event.eventType = eventType;
+        event.topic = topic;
+        event.partitionKey = partitionKey;
+        event.payload = JsonUtils.toJson(payload);
+        event.createdAt = Instant.now();
+        event.retryCount = 0;
+        return event;
+    }
+    
+    public void markPublished() {
+        this.publishedAt = Instant.now();
+    }
+    
+    public void recordFailure(String error) {
+        this.retryCount++;
+        this.lastError = error;
+    }
+}
+```
+
+**Use Case with Outbox:**
+
+```java
+@Service
+@Transactional
+@RequiredArgsConstructor
+public class CreateBookingService implements CreateBookingUseCase {
+
+    private final SaveBookingPort saveBookingPort;
+    private final OutboxRepository outboxRepository;
+
+    @Override
+    public BookingId createBooking(CreateBookingCommand command) {
+        // ... validation and booking creation ...
+        
+        BookingId bookingId = saveBookingPort.save(booking);
+        
+        // Write event to outbox in same transaction
+        BookingCreatedEvent event = new BookingCreatedEvent(
+            bookingId.value(),
+            command.courtId().value(),
+            command.userId().value(),
+            command.dateRange().start(),
+            command.dateRange().end()
+        );
+        
+        OutboxEvent outboxEvent = OutboxEvent.create(
+            "Booking",
+            bookingId.value().toString(),
+            "BOOKING_CREATED",
+            "booking-events",
+            command.courtId().value().toString(),  // partition by courtId
+            event
+        );
+        outboxRepository.save(outboxEvent);
+        
+        return bookingId;
+    }
+}
+```
+
+**Outbox Publisher (Scheduled Job):**
+
+```java
+@Component
+@RequiredArgsConstructor
+@Slf4j
+public class OutboxPublisher {
+
+    private final OutboxRepository outboxRepository;
+    private final KafkaTemplate<String, String> kafkaTemplate;
+    
+    private static final int BATCH_SIZE = 100;
+    private static final int MAX_RETRIES = 5;
+
+    @Scheduled(fixedDelay = 100)  // Poll every 100ms
+    @Transactional
+    public void publishPendingEvents() {
+        List<OutboxEvent> pending = outboxRepository
+            .findUnpublishedOrderByCreatedAt(BATCH_SIZE);
+        
+        for (OutboxEvent event : pending) {
+            if (event.getRetryCount() >= MAX_RETRIES) {
+                log.error("Event {} exceeded max retries, moving to DLQ", event.getId());
+                // Move to dead letter queue or alert
+                continue;
+            }
+            
+            try {
+                kafkaTemplate.send(
+                    event.getTopic(),
+                    event.getPartitionKey(),
+                    event.getPayload()
+                ).get(5, TimeUnit.SECONDS);  // Synchronous send
+                
+                event.markPublished();
+                outboxRepository.save(event);
+                
+            } catch (Exception e) {
+                log.warn("Failed to publish event {}: {}", event.getId(), e.getMessage());
+                event.recordFailure(e.getMessage());
+                outboxRepository.save(event);
+            }
+        }
+    }
+}
+```
+
+### Cross-Schema View Access
+
+Transaction Service reads Platform Service data via database views. These are read-only and should never be used for writes.
+
+**View Definitions (Platform Schema):**
+
+```sql
+-- Flyway migration in Platform Service: V020__create_cross_schema_views.sql
+
+-- Grant Transaction Service user read access
+GRANT USAGE ON SCHEMA platform TO transaction_service_user;
+
+-- Court summary view
+CREATE VIEW platform.v_court_summary AS
+SELECT 
+    id,
+    owner_id,
+    name,
+    court_type,
+    slot_duration_minutes,
+    capacity,
+    base_price_cents,
+    timezone,
+    confirmation_mode,
+    is_visible,
+    version
+FROM platform.courts
+WHERE deleted_at IS NULL;
+
+GRANT SELECT ON platform.v_court_summary TO transaction_service_user;
+
+-- User basic info view
+CREATE VIEW platform.v_user_basic AS
+SELECT 
+    id,
+    email,
+    name,
+    phone,
+    role,
+    language,
+    stripe_connect_account_id,
+    stripe_connect_status,
+    stripe_customer_id,
+    vat_registered,
+    vat_number,
+    status
+FROM platform.users
+WHERE deleted_at IS NULL;
+
+GRANT SELECT ON platform.v_user_basic TO transaction_service_user;
+
+-- Cancellation policy tiers view
+CREATE VIEW platform.v_court_cancellation_tiers AS
+SELECT 
+    court_id,
+    threshold_hours,
+    refund_percent,
+    sort_order
+FROM platform.cancellation_tiers;
+
+GRANT SELECT ON platform.v_court_cancellation_tiers TO transaction_service_user;
+```
+
+**JPA Entity for Cross-Schema View (Read-Only):**
+
+```java
+@Entity
+@Table(name = "v_court_summary", schema = "platform")
+@Immutable  // Hibernate: marks as read-only
+@Getter
+@NoArgsConstructor
+public class CourtSummaryView {
+
+    @Id
+    private Long id;
+    
+    @Column(name = "owner_id")
+    private Long ownerId;
+    
+    private String name;
+    
+    @Column(name = "court_type")
+    @Enumerated(EnumType.STRING)
+    private CourtType courtType;
+    
+    @Column(name = "slot_duration_minutes")
+    private Integer slotDurationMinutes;
+    
+    private Integer capacity;
+    
+    @Column(name = "base_price_cents")
+    private Integer basePriceCents;
+    
+    private String timezone;
+    
+    @Column(name = "confirmation_mode")
+    @Enumerated(EnumType.STRING)
+    private ConfirmationMode confirmationMode;
+    
+    @Column(name = "is_visible")
+    private Boolean isVisible;
+    
+    private Long version;
+}
+```
+
+**Repository for Cross-Schema View:**
+
+```java
+@Repository
+public interface CourtSummaryViewRepository extends Repository<CourtSummaryView, Long> {
+    
+    Optional<CourtSummaryView> findById(Long id);
+    
+    List<CourtSummaryView> findByOwnerIdAndIsVisibleTrue(Long ownerId);
+    
+    // No save/delete methods — read-only!
+}
+```
+
+**Usage in Use Case:**
+
+```java
+@Service
+@RequiredArgsConstructor
+public class CreateBookingService implements CreateBookingUseCase {
+
+    private final CourtSummaryViewRepository courtSummaryView;
+    
+    @Override
+    public BookingId createBooking(CreateBookingCommand command) {
+        // Read court info from cross-schema view
+        CourtSummaryView court = courtSummaryView.findById(command.courtId().value())
+            .orElseThrow(() -> new CourtNotFoundException(command.courtId()));
+        
+        if (!court.getIsVisible()) {
+            throw new CourtNotVisibleException(command.courtId());
+        }
+        
+        // Use court.getBasePriceCents(), court.getTimezone(), etc.
+        // ...
+    }
+}
+```
+
+### Internal API Authentication
+
+For service-to-service calls on `/internal/*` endpoints, use API key authentication in dev/test and mTLS in staging/prod.
+
+**Security Configuration:**
+
+```java
+@Configuration
+@EnableWebSecurity
+@RequiredArgsConstructor
+public class SecurityConfig {
+
+    private final InternalApiKeyFilter internalApiKeyFilter;
+
+    @Bean
+    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+        return http
+            .csrf(AbstractHttpConfigurer::disable)
+            .authorizeHttpRequests(auth -> auth
+                // Actuator health endpoints
+                .requestMatchers("/actuator/health/**").permitAll()
+                
+                // Internal API — authenticated by filter (API key or mTLS)
+                .requestMatchers("/internal/**").authenticated()
+                
+                // Public API — JWT authentication
+                .requestMatchers("/api/v1/**").authenticated()
+                
+                .anyRequest().denyAll()
+            )
+            .addFilterBefore(internalApiKeyFilter, UsernamePasswordAuthenticationFilter.class)
+            .oauth2ResourceServer(oauth2 -> oauth2.jwt(Customizer.withDefaults()))
+            .build();
+    }
+}
+```
+
+**Internal API Key Filter:**
+
+```java
+@Component
+@Slf4j
+public class InternalApiKeyFilter extends OncePerRequestFilter {
+
+    private static final String API_KEY_HEADER = "X-Internal-Api-Key";
+    
+    @Value("${internal.api.key:}")
+    private String expectedApiKey;
+    
+    @Value("${internal.api.mtls-enabled:false}")
+    private boolean mtlsEnabled;
+
+    @Override
+    protected void doFilterInternal(HttpServletRequest request, 
+                                     HttpServletResponse response, 
+                                     FilterChain filterChain) throws ServletException, IOException {
+        
+        // Only apply to /internal/* paths
+        if (!request.getRequestURI().startsWith("/internal/")) {
+            filterChain.doFilter(request, response);
+            return;
+        }
+        
+        // In staging/prod with Istio, mTLS handles auth — skip API key check
+        if (mtlsEnabled) {
+            // Istio validates client certificate; if request reaches here, it's trusted
+            setInternalServiceAuthentication();
+            filterChain.doFilter(request, response);
+            return;
+        }
+        
+        // Dev/test: validate API key
+        String providedKey = request.getHeader(API_KEY_HEADER);
+        
+        if (expectedApiKey.isBlank()) {
+            log.error("INTERNAL_API_KEY not configured");
+            response.sendError(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+            return;
+        }
+        
+        if (!expectedApiKey.equals(providedKey)) {
+            log.warn("Invalid internal API key from {}", request.getRemoteAddr());
+            response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "Invalid API key");
+            return;
+        }
+        
+        setInternalServiceAuthentication();
+        filterChain.doFilter(request, response);
+    }
+    
+    private void setInternalServiceAuthentication() {
+        Authentication auth = new PreAuthenticatedAuthenticationToken(
+            "internal-service", null, List.of(new SimpleGrantedAuthority("ROLE_INTERNAL_SERVICE"))
+        );
+        SecurityContextHolder.getContext().setAuthentication(auth);
+    }
+}
+```
+
+**Internal API Client (Transaction Service → Platform Service):**
+
+```java
+@Component
+@RequiredArgsConstructor
+public class PlatformServiceClient {
+
+    private final RestClient restClient;
+    
+    @Value("${platform-service.base-url}")
+    private String baseUrl;
+    
+    @Value("${internal.api.key}")
+    private String apiKey;
+
+    public SlotValidationResult validateSlot(Long courtId, LocalDate date, 
+                                              LocalTime startTime, LocalTime endTime) {
+        return restClient.get()
+            .uri(baseUrl + "/internal/courts/{courtId}/validate-slot", courtId)
+            .header("X-Internal-Api-Key", apiKey)
+            .retrieve()
+            .body(SlotValidationResult.class);
+    }
+    
+    public PriceCalculationResult calculatePrice(Long courtId, LocalDate date,
+                                                  LocalTime startTime, LocalTime endTime,
+                                                  String promoCode) {
+        return restClient.get()
+            .uri(baseUrl + "/internal/courts/{courtId}/calculate-price?date={date}&startTime={start}&endTime={end}&promoCode={promo}",
+                 courtId, date, startTime, endTime, promoCode)
+            .header("X-Internal-Api-Key", apiKey)
+            .retrieve()
+            .body(PriceCalculationResult.class);
+    }
+}
+```
+
+**Application Properties:**
+
+```yaml
+# application-local.yml
+internal:
+  api:
+    key: ${INTERNAL_API_KEY:dev-secret-key-change-in-prod}
+    mtls-enabled: false
+
+# application-staging.yml / application-prod.yml
+internal:
+  api:
+    key: ""  # Not used with mTLS
+    mtls-enabled: true
+```
+
+### WebSocket + Redis Pub/Sub
+
+For real-time availability updates and notifications across multiple pods, use WebSocket with STOMP and Redis Pub/Sub for horizontal scaling.
+
+**WebSocket Configuration:**
+
+```java
+@Configuration
+@EnableWebSocketMessageBroker
+public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
+
+    @Override
+    public void configureMessageBroker(MessageBrokerRegistry registry) {
+        // Use Redis-backed broker for horizontal scaling
+        registry.enableSimpleBroker("/topic", "/queue");
+        registry.setApplicationDestinationPrefixes("/app");
+        registry.setUserDestinationPrefix("/user");
+    }
+
+    @Override
+    public void registerStompEndpoints(StompEndpointRegistry registry) {
+        registry.addEndpoint("/ws")
+            .setAllowedOriginPatterns("*")
+            .withSockJS();
+    }
+}
+```
+
+**Redis Pub/Sub Configuration:**
+
+```java
+@Configuration
+@RequiredArgsConstructor
+public class RedisPubSubConfig {
+
+    private final RedisConnectionFactory connectionFactory;
+    private final AvailabilityUpdateSubscriber availabilitySubscriber;
+    private final NotificationSubscriber notificationSubscriber;
+
+    @Bean
+    public RedisMessageListenerContainer redisMessageListenerContainer() {
+        RedisMessageListenerContainer container = new RedisMessageListenerContainer();
+        container.setConnectionFactory(connectionFactory);
+        
+        // Subscribe to availability updates channel
+        container.addMessageListener(availabilitySubscriber, 
+            new ChannelTopic("availability-updates"));
+        
+        // Subscribe to user notifications channel (pattern for user-specific)
+        container.addMessageListener(notificationSubscriber, 
+            new PatternTopic("notifications:user:*"));
+        
+        return container;
+    }
+
+    @Bean
+    public RedisTemplate<String, String> redisTemplate() {
+        RedisTemplate<String, String> template = new RedisTemplate<>();
+        template.setConnectionFactory(connectionFactory);
+        template.setKeySerializer(new StringRedisSerializer());
+        template.setValueSerializer(new StringRedisSerializer());
+        return template;
+    }
+}
+```
+
+**Availability Update Publisher:**
+
+```java
+@Component
+@RequiredArgsConstructor
+@Slf4j
+public class AvailabilityBroadcaster {
+
+    private final RedisTemplate<String, String> redisTemplate;
+    private final ObjectMapper objectMapper;
+
+    public void broadcastAvailabilityUpdate(Long courtId, LocalDate date, 
+                                             List<TimeSlot> availableSlots) {
+        try {
+            AvailabilityUpdate update = new AvailabilityUpdate(
+                courtId, date, availableSlots, Instant.now()
+            );
+            String message = objectMapper.writeValueAsString(update);
+            
+            // Publish to Redis — all pods will receive this
+            redisTemplate.convertAndSend("availability-updates", message);
+            
+            log.debug("Broadcast availability update for court {} on {}", courtId, date);
+        } catch (JsonProcessingException e) {
+            log.error("Failed to serialize availability update", e);
+        }
+    }
+}
+```
+
+**Availability Update Subscriber (Receives from Redis, Sends to WebSocket):**
+
+```java
+@Component
+@RequiredArgsConstructor
+@Slf4j
+public class AvailabilityUpdateSubscriber implements MessageListener {
+
+    private final SimpMessagingTemplate messagingTemplate;
+    private final ObjectMapper objectMapper;
+
+    @Override
+    public void onMessage(Message message, byte[] pattern) {
+        try {
+            String json = new String(message.getBody(), StandardCharsets.UTF_8);
+            AvailabilityUpdate update = objectMapper.readValue(json, AvailabilityUpdate.class);
+            
+            // Send to all WebSocket subscribers watching this court
+            String destination = "/topic/courts/" + update.courtId() + "/availability";
+            messagingTemplate.convertAndSend(destination, update);
+            
+            log.debug("Forwarded availability update to WebSocket: {}", destination);
+        } catch (Exception e) {
+            log.error("Failed to process availability update from Redis", e);
+        }
+    }
+}
+```
+
+**User-Specific Notification Publisher:**
+
+```java
+@Component
+@RequiredArgsConstructor
+public class NotificationBroadcaster {
+
+    private final RedisTemplate<String, String> redisTemplate;
+    private final ObjectMapper objectMapper;
+
+    public void sendToUser(Long userId, NotificationPayload notification) {
+        try {
+            String message = objectMapper.writeValueAsString(notification);
+            // Publish to user-specific channel
+            redisTemplate.convertAndSend("notifications:user:" + userId, message);
+        } catch (JsonProcessingException e) {
+            log.error("Failed to serialize notification", e);
+        }
+    }
+}
+```
+
+**WebSocket Controller:**
+
+```java
+@Controller
+@RequiredArgsConstructor
+@Slf4j
+public class AvailabilityWebSocketController {
+
+    private final AvailabilityService availabilityService;
+
+    @MessageMapping("/courts/{courtId}/subscribe")
+    @SendTo("/topic/courts/{courtId}/availability")
+    public AvailabilityUpdate subscribeToCourtAvailability(
+            @DestinationVariable Long courtId,
+            @Payload SubscriptionRequest request) {
+        
+        log.info("Client subscribed to court {} availability for date {}", 
+                 courtId, request.date());
+        
+        // Return current availability immediately
+        return availabilityService.getCurrentAvailability(courtId, request.date());
+    }
+}
+```
+
+### Flyway Migration Conventions
+
+**Naming Convention:**
+
+```
+V{version}__{description}.sql
+
+Examples:
+V001__create_users_table.sql
+V002__create_courts_table.sql
+V003__add_postgis_extension.sql
+V004__create_bookings_table.sql
+V005__add_booking_indexes.sql
+V010__create_outbox_table.sql
+V020__create_cross_schema_views.sql
+
+Repeatable migrations (run on every change):
+R__create_views.sql
+R__update_functions.sql
+```
+
+**Example Migration with PostGIS:**
+
+```sql
+-- V003__add_postgis_extension.sql
+-- Enable PostGIS for geospatial queries
+
+CREATE EXTENSION IF NOT EXISTS postgis;
+CREATE EXTENSION IF NOT EXISTS postgis_topology;
+
+-- Add location column to courts table
+ALTER TABLE platform.courts 
+ADD COLUMN location GEOGRAPHY(POINT, 4326);
+
+-- Create spatial index for distance queries
+CREATE INDEX idx_courts_location ON platform.courts USING GIST (location);
+
+-- Example: Find courts within 10km of a point
+-- SELECT * FROM platform.courts 
+-- WHERE ST_DWithin(location, ST_MakePoint(23.7275, 37.9838)::geography, 10000);
+```
+
+**Example Migration for Bookings:**
+
+```sql
+-- V004__create_bookings_table.sql
+
+CREATE TABLE transaction.bookings (
+    id                      BIGSERIAL PRIMARY KEY,
+    court_id                BIGINT NOT NULL,
+    user_id                 BIGINT NOT NULL,
+    date                    DATE NOT NULL,
+    start_time              TIME NOT NULL,
+    end_time                TIME NOT NULL,
+    status                  VARCHAR(30) NOT NULL DEFAULT 'PENDING',
+    payment_status          VARCHAR(30) NOT NULL DEFAULT 'PENDING',
+    total_amount_cents      INTEGER NOT NULL,
+    platform_fee_cents      INTEGER NOT NULL,
+    court_owner_net_cents   INTEGER NOT NULL,
+    currency                VARCHAR(3) NOT NULL DEFAULT 'EUR',
+    stripe_payment_intent_id VARCHAR(100),
+    idempotency_key         UUID UNIQUE,
+    recurring_group_id      UUID,
+    promo_code_id           BIGINT,
+    notes                   TEXT,
+    version                 BIGINT NOT NULL DEFAULT 0,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    
+    CONSTRAINT chk_booking_times CHECK (start_time < end_time),
+    CONSTRAINT chk_booking_amounts CHECK (
+        total_amount_cents >= 0 AND 
+        platform_fee_cents >= 0 AND 
+        court_owner_net_cents >= 0
+    )
+);
+
+-- Prevent double-bookings (only for active bookings)
+CREATE UNIQUE INDEX uq_bookings_slot_active 
+ON transaction.bookings (court_id, date, start_time, end_time) 
+WHERE status NOT IN ('CANCELLED', 'REJECTED');
+
+-- Query indexes
+CREATE INDEX idx_bookings_court_date ON transaction.bookings (court_id, date);
+CREATE INDEX idx_bookings_user ON transaction.bookings (user_id);
+CREATE INDEX idx_bookings_status ON transaction.bookings (status) WHERE status NOT IN ('CANCELLED', 'COMPLETED');
+CREATE INDEX idx_bookings_recurring ON transaction.bookings (recurring_group_id) WHERE recurring_group_id IS NOT NULL;
+CREATE INDEX idx_bookings_payment_intent ON transaction.bookings (stripe_payment_intent_id) WHERE stripe_payment_intent_id IS NOT NULL;
+
+-- Trigger for updated_at
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ language 'plpgsql';
+
+CREATE TRIGGER update_bookings_updated_at
+    BEFORE UPDATE ON transaction.bookings
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+```
+
+### MapStruct Configuration
+
+**Gradle Dependency:**
+
+```groovy
+dependencies {
+    implementation 'org.mapstruct:mapstruct:1.5.5.Final'
+    annotationProcessor 'org.mapstruct:mapstruct-processor:1.5.5.Final'
+    annotationProcessor 'org.projectlombok:lombok-mapstruct-binding:0.2.0'
+}
+```
+
+**Mapper for Domain ↔ JPA Entity with Value Objects:**
+
+```java
+@Mapper(componentModel = "spring", unmappedTargetPolicy = ReportingPolicy.ERROR)
+public interface BookingPersistenceMapper {
+
+    @Mapping(target = "id", source = "id", qualifiedByName = "bookingIdToLong")
+    @Mapping(target = "courtId", source = "courtId", qualifiedByName = "courtIdToLong")
+    @Mapping(target = "userId", source = "userId", qualifiedByName = "userIdToLong")
+    @Mapping(target = "startTime", source = "dateRange.start", qualifiedByName = "instantToLocalTime")
+    @Mapping(target = "endTime", source = "dateRange.end", qualifiedByName = "instantToLocalTime")
+    @Mapping(target = "date", source = "dateRange.start", qualifiedByName = "instantToLocalDate")
+    BookingJpaEntity toEntity(Booking domain);
+
+    @Mapping(target = "id", source = "id", qualifiedByName = "longToBookingId")
+    @Mapping(target = "courtId", source = "courtId", qualifiedByName = "longToCourtId")
+    @Mapping(target = "userId", source = "userId", qualifiedByName = "longToUserId")
+    @Mapping(target = "dateRange", source = ".", qualifiedByName = "toDateRange")
+    Booking toDomain(BookingJpaEntity entity);
+
+    // Value Object converters
+    @Named("bookingIdToLong")
+    default Long bookingIdToLong(BookingId id) {
+        return id != null ? id.value() : null;
+    }
+
+    @Named("longToBookingId")
+    default BookingId longToBookingId(Long id) {
+        return id != null ? new BookingId(id) : null;
+    }
+
+    @Named("courtIdToLong")
+    default Long courtIdToLong(CourtId id) {
+        return id != null ? id.value() : null;
+    }
+
+    @Named("longToCourtId")
+    default CourtId longToCourtId(Long id) {
+        return id != null ? new CourtId(id) : null;
+    }
+
+    @Named("userIdToLong")
+    default Long userIdToLong(UserId id) {
+        return id != null ? id.value() : null;
+    }
+
+    @Named("longToUserId")
+    default UserId longToUserId(Long id) {
+        return id != null ? new UserId(id) : null;
+    }
+
+    @Named("toDateRange")
+    default DateRange toDateRange(BookingJpaEntity entity) {
+        LocalDateTime start = LocalDateTime.of(entity.getDate(), entity.getStartTime());
+        LocalDateTime end = LocalDateTime.of(entity.getDate(), entity.getEndTime());
+        return new DateRange(start, end);
+    }
+
+    @Named("instantToLocalTime")
+    default LocalTime instantToLocalTime(LocalDateTime dateTime) {
+        return dateTime != null ? dateTime.toLocalTime() : null;
+    }
+
+    @Named("instantToLocalDate")
+    default LocalDate instantToLocalDate(LocalDateTime dateTime) {
+        return dateTime != null ? dateTime.toLocalDate() : null;
+    }
+}
+```
+
+**Mapper for Web DTOs:**
+
+```java
+@Mapper(componentModel = "spring")
+public interface BookingWebMapper {
+
+    @Mapping(target = "id", source = "id.value")
+    @Mapping(target = "courtId", source = "courtId.value")
+    @Mapping(target = "userId", source = "userId.value")
+    @Mapping(target = "startTime", source = "dateRange.start")
+    @Mapping(target = "endTime", source = "dateRange.end")
+    BookingResponse toResponse(Booking domain);
+
+    List<BookingResponse> toResponseList(List<Booking> domains);
+}
+```
+
+**Web DTO (Record):**
+
+```java
+public record BookingResponse(
+    Long id,
+    Long courtId,
+    Long userId,
+    LocalDateTime startTime,
+    LocalDateTime endTime,
+    String status,
+    String paymentStatus,
+    Integer totalAmountCents,
+    String currency
+) {}
+```
+
 ## References
 
 - [Buckpal — thombergs](https://github.com/thombergs/buckpal) — Hexagonal Architecture reference (~2.5k ⭐, 722 forks)
