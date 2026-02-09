@@ -298,6 +298,7 @@ Monitoring: `availability_update_latency_seconds` histogram metric (measured fro
 - Recurring booking creation (weekly advance)
 - Booking reminders
 - Payment reconciliation (daily — see below)
+- Recurring booking price updates (on PRICING_UPDATED event)
 - Clustered via JDBC job store (`isClustered=true`)
 
 #### Payment Reconciliation Job
@@ -310,6 +311,108 @@ A daily Quartz job (`PaymentReconciliationJob`) reconciles payment state between
 4. Logs all reconciliation actions to `transaction.audit_logs`
 
 This catches edge cases where webhook delivery fails or the application crashes between payment authorization and booking confirmation.
+
+#### Recurring Booking Pricing Updates (Req 8.12)
+
+When a court owner changes pricing (base price or pricing rules), Transaction Service must handle existing recurring bookings appropriately. This is triggered by the `PRICING_UPDATED` Kafka event.
+
+**Scope:**
+- Only affects **future unconfirmed** recurring booking instances
+- Already confirmed/completed/cancelled instances are NOT affected
+- Instances with `payment_status = 'CAPTURED'` are NOT affected (already paid)
+
+**Processing Flow:**
+
+```
+Platform Service                    Transaction Service
+      │                                    │
+      │  PRICING_UPDATED event             │
+      │  (courtId, effectiveFrom,          │
+      │   basePriceCents, pricingRules)    │
+      ├───────────────────────────────────►│
+      │                                    │
+      │                          1. Query affected bookings:
+      │                             - recurring_group_id IS NOT NULL
+      │                             - court_id = event.courtId
+      │                             - date >= event.effectiveFrom
+      │                             - status IN ('PENDING_CONFIRMATION', 'CONFIRMED')
+      │                             - payment_status NOT IN ('CAPTURED', 'REFUNDED')
+      │                                    │
+      │                          2. For each affected booking:
+      │                             - Recalculate price using new rules
+      │                             - Update total_amount_cents, platform_fee_cents, court_owner_net_cents
+      │                             - Record price change in audit_logs
+      │                                    │
+      │                          3. Group by recurring_group_id + user_id
+      │                             - Send ONE notification per recurring series
+      │                                    │
+      │  NOTIFICATION_REQUESTED            │
+      │  (RECURRING_BOOKING_PRICE_CHANGED) │
+      │◄───────────────────────────────────┤
+      │                                    │
+```
+
+**Notification Content:**
+- Type: `RECURRING_BOOKING_PRICE_CHANGED` (new notification type)
+- Urgency: `STANDARD`
+- Title: "Price change for your recurring booking"
+- Body: "The price for your {courtName} booking on {dayOfWeek}s has changed from €{oldPrice} to €{newPrice}. This affects {count} upcoming bookings starting {firstAffectedDate}."
+- Deep link: `/bookings/recurring/{recurringGroupId}`
+
+**Customer Options (via app):**
+1. **Accept** — No action needed, bookings continue with new price
+2. **Cancel affected instances** — Customer can cancel individual instances (normal cancellation policy applies)
+3. **Cancel entire series** — Customer can cancel all remaining instances at once
+
+**Edge Cases:**
+
+| Scenario | Behavior |
+|----------|----------|
+| Price increases | Update price, notify customer, customer can cancel with refund per policy |
+| Price decreases | Update price, notify customer (good news!), no action needed |
+| Booking in PENDING_CONFIRMATION | Update price before court owner confirms |
+| Payment already authorized but not captured | Cancel old PaymentIntent, create new one with updated amount |
+| effectiveFrom is in the past | Apply to all future instances regardless of effectiveFrom |
+| Multiple price changes in short period | Coalesce notifications (max 1 per hour per recurring series) |
+
+**Database Updates:**
+
+```sql
+-- Update affected bookings
+UPDATE transaction.bookings
+SET 
+  total_amount_cents = :newAmount,
+  platform_fee_cents = :newPlatformFee,
+  court_owner_net_cents = :newCourtOwnerNet,
+  updated_at = NOW()
+WHERE 
+  court_id = :courtId
+  AND recurring_group_id IS NOT NULL
+  AND date >= :effectiveFrom
+  AND status IN ('PENDING_CONFIRMATION', 'CONFIRMED')
+  AND payment_status NOT IN ('CAPTURED', 'REFUNDED', 'PARTIALLY_REFUNDED');
+
+-- Audit log entry
+INSERT INTO transaction.audit_logs (booking_id, action, actor_type, details, created_at)
+SELECT 
+  id, 
+  'PRICE_UPDATED_BY_COURT_OWNER',
+  'SYSTEM',
+  jsonb_build_object(
+    'previousAmount', total_amount_cents,
+    'newAmount', :newAmount,
+    'reason', 'PRICING_UPDATED_EVENT',
+    'eventId', :eventId
+  ),
+  NOW()
+FROM transaction.bookings
+WHERE court_id = :courtId AND recurring_group_id IS NOT NULL AND date >= :effectiveFrom;
+```
+
+**Metrics:**
+- `recurring_booking_price_updates_total` — Counter of price updates processed
+- `recurring_booking_price_update_notifications_total` — Counter of notifications sent
+- `recurring_booking_cancellations_after_price_change_total` — Counter of cancellations within 24h of price change notification
 
 ## 5. Data Ownership
 
@@ -491,7 +594,7 @@ Developer ──► GitHub PR ──► GitHub Actions Pipeline:
 | `court-booking-admin-web` | React, TypeScript | Court owner + platform admin portal |
 | `court-booking-qa` | pytest, Locust, Playwright, Patrol | Functional, stress, contract, UI tests |
 | `court-booking-infrastructure` | Terraform, Kubernetes, Helm | DigitalOcean provisioning, K8s manifests, Istio |
-| `court-booking-common` | Java 21 | Shared DTOs, Kafka event envelope + payload classes, exceptions |
+| `court-booking-common` | Java 21 | Shared DTOs, Kafka event classes, exceptions, utilities. See [`LIBRARY-SPEC.md`](court-booking-common/LIBRARY-SPEC.md) |
 
 ## 11. Key Design Decisions
 

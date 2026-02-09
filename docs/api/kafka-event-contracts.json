@@ -233,6 +233,7 @@
                   "BOOKING_REJECTED",
                   "BOOKING_PENDING_CONFIRMATION",
                   "BOOKING_REMINDER",
+                  "RECURRING_BOOKING_PRICE_CHANGED",
                   "PAYMENT_RECEIVED",
                   "PAYMENT_FAILED",
                   "PAYMENT_DISPUTE",
@@ -324,7 +325,7 @@
         },
 
         "PRICING_UPDATED": {
-          "description": "Published when court pricing rules change (base price, peak/off-peak multipliers, special pricing). Transaction Service uses this to calculate correct booking amounts.",
+          "description": "Published when court pricing rules change (base price, peak/off-peak multipliers, special pricing). Transaction Service uses this to: (1) update its pricing cache for new bookings, (2) recalculate prices for future unconfirmed recurring booking instances, and (3) notify affected customers of price changes.",
           "requirements": ["Req 8.12 — apply new pricing to future recurring instances", "Req 27.7–27.8 — dynamic pricing config"],
           "payload": {
             "type": "object",
@@ -332,7 +333,9 @@
             "properties": {
               "courtId": { "type": "string", "format": "uuid" },
               "courtOwnerId": { "type": "string", "format": "uuid" },
-              "basePriceCents": { "type": "integer" },
+              "courtName": { "type": "string", "description": "Court name for notification content." },
+              "previousBasePriceCents": { "type": ["integer", "null"], "description": "Previous base price (null if this is initial pricing setup)." },
+              "basePriceCents": { "type": "integer", "description": "New base price in euro cents." },
               "pricingRules": {
                 "type": "array",
                 "items": {
@@ -342,11 +345,13 @@
                     "dayOfWeek": { "type": "string", "enum": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"] },
                     "startTime": { "type": "string", "pattern": "^\\d{2}:\\d{2}$" },
                     "endTime": { "type": "string", "pattern": "^\\d{2}:\\d{2}$" },
-                    "multiplier": { "type": "number", "minimum": 0.1, "maximum": 5.0 }
+                    "multiplier": { "type": "number", "minimum": 0.1, "maximum": 5.0 },
+                    "label": { "type": ["string", "null"], "description": "Human-readable label (e.g., 'Peak Hours', 'Off-Peak')." }
                   }
                 }
               },
-              "effectiveFrom": { "type": "string", "format": "date", "description": "Date from which new pricing applies." }
+              "effectiveFrom": { "type": "string", "format": "date", "description": "Date from which new pricing applies. Recurring bookings on or after this date will be updated." },
+              "changedBy": { "type": "string", "format": "uuid", "description": "User ID of the court owner who made the change." }
             }
           }
         },
