@@ -11,6 +11,7 @@ These files are the **single source of truth** for API interfaces. All services 
 | `openapi-platform-service.yaml` | Platform Service | Auth, users, courts, availability, weather, analytics, support, admin |
 | `openapi-transaction-service.yaml` | Transaction Service | Bookings, payments, notifications, waitlist, matches, split payments |
 | `kafka-event-contracts.json` | Both | Kafka event schemas for async communication between services |
+| `websocket-message-contracts.json` | Transaction Service | WebSocket message schemas for real-time client communication |
 
 ## Usage
 
@@ -51,6 +52,34 @@ Every Kafka message value follows a common envelope with `eventId`, `eventType`,
 ### Shared Library
 
 Event schemas are implemented as Java classes in `court-booking-common` and published to GitHub Packages. Both services depend on this library for serialization/deserialization.
+
+## WebSocket Message Contracts
+
+`websocket-message-contracts.json` defines the real-time message schemas exchanged between Transaction Service and connected clients (mobile app, admin web) via STOMP over WebSocket.
+
+### Connection
+
+- Endpoint: `/ws?token=<jwt>`
+- Protocol: STOMP over WebSocket (SockJS fallback)
+- Scaling: Redis Pub/Sub across Transaction Service pods
+
+### STOMP Destinations
+
+| Destination | Direction | Auth | Description |
+|-------------|-----------|------|-------------|
+| `/topic/courts/{courtId}/availability` | Server → Client | Any authenticated user | Real-time slot availability updates |
+| `/user/queue/bookings` | Server → Client | Booking customer or court owner | Booking status changes |
+| `/user/queue/notifications` | Server → Client | Authenticated user (own only) | In-app notifications |
+| `/topic/courts/{courtId}/matches` | Server → Client | Any authenticated user | Open match updates (Phase 2) |
+| `/user/queue/matches` | Server → Client | Match participants only | Personal match updates (Phase 2) |
+| `/user/queue/system` | Server → Client | All connections | Token expiry, shutdown, errors |
+| `/app/token-refresh` | Client → Server | Authenticated user | Refresh JWT without reconnecting |
+
+### Message Types
+
+**Server → Client:** `AVAILABILITY_UPDATE`, `AVAILABILITY_SNAPSHOT`, `BOOKING_STATUS_UPDATE`, `NOTIFICATION`, `MATCH_UPDATE`, `TOKEN_EXPIRING`, `SERVER_SHUTDOWN`, `ERROR`
+
+**Client → Server:** `TOKEN_REFRESH`
 
 ## Editing
 

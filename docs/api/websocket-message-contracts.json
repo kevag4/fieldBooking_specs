@@ -1,0 +1,414 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Court Booking Platform — WebSocket Message Contracts",
+  "description": "Formal JSON Schema definitions for all WebSocket messages exchanged between Transaction Service and connected clients (mobile app, admin web). STOMP over WebSocket with Redis Pub/Sub for horizontal scaling. Single source of truth for real-time message interfaces.",
+
+  "connection": {
+    "endpoint": "/ws",
+    "protocol": "STOMP over WebSocket (SockJS fallback)",
+    "authentication": "JWT access token passed as query parameter: /ws?token=<jwt>",
+    "heartbeat": {
+      "intervalSeconds": 30,
+      "missedBeforeDisconnect": 2,
+      "description": "Server sends STOMP heartbeat frames every 30 seconds. Connection closed after 2 missed heartbeats (60 seconds)."
+    },
+    "limits": {
+      "maxMessageSizeBytes": 65536,
+      "maxIncomingMessagesPerSecond": 10,
+      "maxInvalidMessagesBeforeDisconnect": 3,
+      "maxConnectionsPerPod": 10000
+    },
+    "reconnection": {
+      "strategy": "Exponential backoff: 1s, 2s, 4s, 8s, 16s, max 30s",
+      "onReconnect": "Server sends full availability snapshot for previously subscribed courts"
+    },
+    "closeCodes": {
+      "4001": "Authentication expired — token refresh failed or timed out",
+      "4002": "Authorization denied — insufficient permissions for requested channel",
+      "4003": "Rate limit exceeded — too many messages",
+      "4004": "Invalid messages — exceeded max invalid message threshold",
+      "4005": "Server shutdown — graceful drain, client should reconnect"
+    }
+  },
+
+  "destinations": {
+    "description": "STOMP destination prefixes. Clients subscribe to /topic/* and /user/queue/* destinations. Clients send to /app/* destinations.",
+
+    "subscribe": {
+      "/topic/courts/{courtId}/availability": {
+        "description": "Real-time availability updates for a specific court. Public data — any authenticated user can subscribe. Does NOT include booking customer details.",
+        "authorization": "Any authenticated user",
+        "requirements": ["Req 7.6", "Req 19.11", "Req 35.11"]
+      },
+      "/user/queue/bookings": {
+        "description": "Booking status updates for the authenticated user's bookings (as customer) or bookings on their courts (as court owner). User-specific queue — STOMP user destination ensures isolation.",
+        "authorization": "CUSTOMER receives own bookings only. COURT_OWNER receives bookings on own courts only.",
+        "requirements": ["Req 35.8", "Req 35.9", "Req 35.10"]
+      },
+      "/user/queue/notifications": {
+        "description": "In-app notifications for the authenticated user. Delivered when app is active instead of push notifications.",
+        "authorization": "Authenticated user — receives own notifications only",
+        "requirements": ["Req 13.6", "Req 35.8"]
+      },
+      "/topic/courts/{courtId}/matches": {
+        "description": "Open match updates for a specific court (player joins/leaves, match full/closed). Phase 2 feature.",
+        "authorization": "Any authenticated user",
+        "requirements": ["Req 24"]
+      },
+      "/user/queue/matches": {
+        "description": "Match-specific updates for the authenticated user (join request approved/declined, match cancelled). Phase 2 feature.",
+        "authorization": "Authenticated user — receives own match updates only",
+        "requirements": ["Req 24"]
+      },
+      "/user/queue/system": {
+        "description": "System messages: token expiry warnings, server shutdown notices, error messages.",
+        "authorization": "Authenticated user",
+        "requirements": ["Req 35.4", "Req 35.7"]
+      }
+    },
+
+    "send": {
+      "/app/token-refresh": {
+        "description": "Client sends a refreshed JWT token to update the connection's authentication context without reconnecting.",
+        "requirements": ["Req 35.5", "Req 35.6"]
+      }
+    }
+  },
+
+  "serverMessages": {
+    "description": "Messages sent from Transaction Service to connected clients. All messages include a traceId for distributed tracing (Req 16.8).",
+
+    "AVAILABILITY_UPDATE": {
+      "description": "Published when a court's availability changes (booking created, cancelled, modified, slot held, or slot released). Sent to /topic/courts/{courtId}/availability. Does not include customer identity information.",
+      "destination": "/topic/courts/{courtId}/availability",
+      "trigger": "Kafka booking-events consumed by Transaction Service → Redis Pub/Sub → WebSocket broadcast",
+      "requirements": ["Req 7.6 — cache invalidation broadcast", "Req 19.11 — propagate within 2 seconds", "Req 35.11 — no customer details in availability"],
+      "payload": {
+        "type": "object",
+        "required": ["messageType", "courtId", "date", "slots", "timestamp", "traceId"],
+        "properties": {
+          "messageType": { "type": "string", "const": "AVAILABILITY_UPDATE" },
+          "courtId": { "type": "string", "format": "uuid" },
+          "date": { "type": "string", "format": "date", "description": "Affected date in court's local timezone." },
+          "slots": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["startTime", "endTime", "status"],
+              "properties": {
+                "startTime": { "type": "string", "pattern": "^\\d{2}:\\d{2}$", "description": "HH:mm in court's local timezone." },
+                "endTime": { "type": "string", "pattern": "^\\d{2}:\\d{2}$" },
+                "status": {
+                  "type": "string",
+                  "enum": ["AVAILABLE", "BOOKED", "HELD", "BLOCKED"],
+                  "description": "AVAILABLE: open for booking. BOOKED: confirmed or pending confirmation. HELD: temporarily held (5-min booking in progress). BLOCKED: availability override."
+                },
+                "holdExpiresAt": { "type": ["string", "null"], "format": "date-time", "description": "Non-null only when status is HELD. ISO 8601 UTC." }
+              }
+            },
+            "description": "Full slot list for the affected date. Clients replace their local state entirely (not incremental)."
+          },
+          "timestamp": { "type": "string", "format": "date-time", "description": "ISO 8601 UTC when this update was generated." },
+          "traceId": { "type": "string", "description": "W3C Trace Context trace ID from the originating operation." }
+        }
+      }
+    },
+
+    "AVAILABILITY_SNAPSHOT": {
+      "description": "Full availability snapshot sent on initial subscription or after client reconnection. Same schema as AVAILABILITY_UPDATE but covers multiple dates.",
+      "destination": "/topic/courts/{courtId}/availability",
+      "trigger": "Client subscribes to court availability channel, or reconnects after disconnection",
+      "requirements": ["Req 7.8 — full snapshot on reconnect"],
+      "payload": {
+        "type": "object",
+        "required": ["messageType", "courtId", "dates", "timestamp", "traceId"],
+        "properties": {
+          "messageType": { "type": "string", "const": "AVAILABILITY_SNAPSHOT" },
+          "courtId": { "type": "string", "format": "uuid" },
+          "dates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["date", "slots"],
+              "properties": {
+                "date": { "type": "string", "format": "date" },
+                "slots": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["startTime", "endTime", "status"],
+                    "properties": {
+                      "startTime": { "type": "string", "pattern": "^\\d{2}:\\d{2}$" },
+                      "endTime": { "type": "string", "pattern": "^\\d{2}:\\d{2}$" },
+                      "status": { "type": "string", "enum": ["AVAILABLE", "BOOKED", "HELD", "BLOCKED"] },
+                      "holdExpiresAt": { "type": ["string", "null"], "format": "date-time" }
+                    }
+                  }
+                }
+              }
+            },
+            "description": "Availability for all dates the client was viewing (typically 7-14 days)."
+          },
+          "timestamp": { "type": "string", "format": "date-time" },
+          "traceId": { "type": "string" }
+        }
+      }
+    },
+
+    "BOOKING_STATUS_UPDATE": {
+      "description": "Published when a booking's status changes (confirmed, cancelled, rejected, completed, no-show flagged). Sent to user-specific queue — only the booking customer and court owner receive it.",
+      "destination": "/user/queue/bookings",
+      "trigger": "Booking lifecycle state change in Transaction Service",
+      "requirements": ["Req 10.7 — confirmation notification", "Req 12 — cancellation notification", "Req 35.8–35.10 — user isolation"],
+      "payload": {
+        "type": "object",
+        "required": ["messageType", "bookingId", "courtId", "status", "timestamp", "traceId"],
+        "properties": {
+          "messageType": { "type": "string", "const": "BOOKING_STATUS_UPDATE" },
+          "bookingId": { "type": "string", "format": "uuid" },
+          "courtId": { "type": "string", "format": "uuid" },
+          "courtName": { "type": "string", "description": "Localized court name based on user's language preference." },
+          "date": { "type": "string", "format": "date" },
+          "startTime": { "type": "string", "pattern": "^\\d{2}:\\d{2}$" },
+          "endTime": { "type": "string", "pattern": "^\\d{2}:\\d{2}$" },
+          "status": {
+            "type": "string",
+            "enum": ["PENDING_CONFIRMATION", "CONFIRMED", "CANCELLED", "REJECTED", "COMPLETED"],
+            "description": "New booking status."
+          },
+          "previousStatus": {
+            "type": "string",
+            "enum": ["PENDING_CONFIRMATION", "CONFIRMED", "CANCELLED", "REJECTED", "COMPLETED"],
+            "description": "Previous booking status."
+          },
+          "cancelledBy": { "type": ["string", "null"], "enum": ["CUSTOMER", "COURT_OWNER", "SYSTEM", null] },
+          "cancellationReason": { "type": ["string", "null"] },
+          "refundAmountCents": { "type": ["integer", "null"], "description": "Non-null when status is CANCELLED and a refund was issued." },
+          "paymentStatus": {
+            "type": ["string", "null"],
+            "enum": ["PENDING", "AUTHORIZED", "CAPTURED", "REFUNDED", "PARTIALLY_REFUNDED", "FAILED", null],
+            "description": "Current payment status, if applicable."
+          },
+          "noShow": { "type": "boolean", "default": false },
+          "timestamp": { "type": "string", "format": "date-time" },
+          "traceId": { "type": "string" }
+        }
+      }
+    },
+
+    "NOTIFICATION": {
+      "description": "In-app notification delivered via WebSocket when the user's app is active. Falls back to push notification if WebSocket delivery fails (Req 13.11).",
+      "destination": "/user/queue/notifications",
+      "trigger": "Kafka notification-events consumed → notification processor routes to WebSocket for active users",
+      "requirements": ["Req 13.6 — in-app via WebSocket", "Req 13.11 — fallback to push", "Req 13.13 — urgency levels"],
+      "payload": {
+        "type": "object",
+        "required": ["messageType", "notificationId", "notificationType", "urgency", "title", "body", "timestamp", "traceId"],
+        "properties": {
+          "messageType": { "type": "string", "const": "NOTIFICATION" },
+          "notificationId": { "type": "string", "format": "uuid", "description": "Unique notification ID for read tracking and deduplication." },
+          "notificationType": {
+            "type": "string",
+            "enum": [
+              "BOOKING_CONFIRMED",
+              "BOOKING_CANCELLED",
+              "BOOKING_REJECTED",
+              "BOOKING_PENDING_CONFIRMATION",
+              "BOOKING_REMINDER",
+              "PAYMENT_RECEIVED",
+              "PAYMENT_FAILED",
+              "PAYMENT_DISPUTE",
+              "PAYOUT_COMPLETED",
+              "REFUND_COMPLETED",
+              "WAITLIST_SLOT_AVAILABLE",
+              "WAITLIST_EXPIRED",
+              "MATCH_JOIN_REQUEST",
+              "MATCH_JOIN_APPROVED",
+              "MATCH_JOIN_DECLINED",
+              "MATCH_PLAYER_LEFT",
+              "SPLIT_PAYMENT_REQUESTED",
+              "SPLIT_PAYMENT_RECEIVED",
+              "SPLIT_PAYMENT_EXPIRED",
+              "PENDING_CONFIRMATION_REMINDER",
+              "SUBSCRIPTION_EXPIRING",
+              "SUBSCRIPTION_EXPIRED",
+              "SUBSCRIPTION_RENEWED",
+              "VERIFICATION_APPROVED",
+              "VERIFICATION_REJECTED",
+              "SUPPORT_TICKET_UPDATED",
+              "REMINDER_ALERT",
+              "WEATHER_ALERT"
+            ],
+            "description": "Matches the notificationType enum from Kafka notification-events."
+          },
+          "urgency": {
+            "type": "string",
+            "enum": ["CRITICAL", "STANDARD", "PROMOTIONAL"],
+            "description": "CRITICAL: always delivered immediately. STANDARD: respects DND. PROMOTIONAL: respects opt-out."
+          },
+          "title": { "type": "string", "description": "Localized title in the user's preferred language." },
+          "body": { "type": "string", "description": "Localized body in the user's preferred language." },
+          "data": {
+            "type": "object",
+            "description": "Structured payload for client-side deep linking and display.",
+            "properties": {
+              "bookingId": { "type": ["string", "null"], "format": "uuid" },
+              "courtId": { "type": ["string", "null"], "format": "uuid" },
+              "matchId": { "type": ["string", "null"], "format": "uuid" },
+              "paymentId": { "type": ["string", "null"], "format": "uuid" },
+              "ticketId": { "type": ["string", "null"], "format": "uuid" },
+              "deepLink": { "type": ["string", "null"], "description": "In-app navigation target, e.g., '/bookings/{id}'." }
+            }
+          },
+          "timestamp": { "type": "string", "format": "date-time" },
+          "traceId": { "type": "string" }
+        }
+      }
+    },
+
+    "MATCH_UPDATE": {
+      "description": "⏳ Phase 2. Published when an open match's state changes (player joins/leaves, match full/closed). Sent to court-level topic for public match info and user queue for personal match updates.",
+      "destination": "/topic/courts/{courtId}/matches OR /user/queue/matches",
+      "trigger": "Kafka match-events consumed by Transaction Service",
+      "requirements": ["Req 24"],
+      "payload": {
+        "type": "object",
+        "required": ["messageType", "matchId", "courtId", "updateType", "timestamp", "traceId"],
+        "properties": {
+          "messageType": { "type": "string", "const": "MATCH_UPDATE" },
+          "matchId": { "type": "string", "format": "uuid" },
+          "courtId": { "type": "string", "format": "uuid" },
+          "updateType": {
+            "type": "string",
+            "enum": ["PLAYER_JOINED", "PLAYER_LEFT", "MATCH_FULL", "MATCH_CANCELLED", "MATCH_EXPIRED", "JOIN_REQUEST_RECEIVED", "JOIN_REQUEST_APPROVED", "JOIN_REQUEST_DECLINED"],
+            "description": "PLAYER_JOINED/LEFT/MATCH_FULL/CANCELLED/EXPIRED go to court topic. JOIN_REQUEST_* go to user queue."
+          },
+          "currentPlayers": { "type": "integer" },
+          "maxPlayers": { "type": "integer" },
+          "costPerPlayerCents": { "type": "integer" },
+          "affectedUserId": { "type": ["string", "null"], "format": "uuid", "description": "User who joined, left, or submitted a request." },
+          "affectedUserName": { "type": ["string", "null"], "description": "Display name of affected user (only in user-specific messages, not court-level)." },
+          "timestamp": { "type": "string", "format": "date-time" },
+          "traceId": { "type": "string" }
+        }
+      }
+    },
+
+    "TOKEN_EXPIRING": {
+      "description": "Sent 60 seconds before the JWT access token expires. Client should refresh the token and send TOKEN_REFRESH.",
+      "destination": "/user/queue/system",
+      "trigger": "Token expiry timer on the server-side connection context",
+      "requirements": ["Req 35.4"],
+      "payload": {
+        "type": "object",
+        "required": ["messageType", "expiresAt"],
+        "properties": {
+          "messageType": { "type": "string", "const": "TOKEN_EXPIRING" },
+          "expiresAt": { "type": "string", "format": "date-time", "description": "ISO 8601 UTC when the current token expires." }
+        }
+      }
+    },
+
+    "SERVER_SHUTDOWN": {
+      "description": "Sent during graceful shutdown (rolling deployment). Client should reconnect with exponential backoff.",
+      "destination": "/user/queue/system",
+      "trigger": "Pod shutdown signal (SIGTERM) during rolling deployment",
+      "requirements": ["Req 19 — graceful shutdown"],
+      "payload": {
+        "type": "object",
+        "required": ["messageType", "reason", "reconnectAfterMs"],
+        "properties": {
+          "messageType": { "type": "string", "const": "SERVER_SHUTDOWN" },
+          "reason": { "type": "string", "enum": ["DEPLOYMENT", "MAINTENANCE"], "description": "Reason for shutdown." },
+          "reconnectAfterMs": { "type": "integer", "description": "Suggested delay before reconnection attempt (milliseconds)." }
+        }
+      }
+    },
+
+    "ERROR": {
+      "description": "Error message sent to the client before disconnection or as a warning.",
+      "destination": "/user/queue/system",
+      "trigger": "Various — invalid subscription, authorization failure, rate limit, malformed message",
+      "requirements": ["Req 35.13–35.15"],
+      "payload": {
+        "type": "object",
+        "required": ["messageType", "code", "message"],
+        "properties": {
+          "messageType": { "type": "string", "const": "ERROR" },
+          "code": {
+            "type": "string",
+            "enum": ["AUTH_EXPIRED", "AUTH_DENIED", "RATE_LIMITED", "INVALID_MESSAGE", "INVALID_SUBSCRIPTION", "MESSAGE_TOO_LARGE", "INTERNAL_ERROR"],
+            "description": "Machine-readable error code."
+          },
+          "message": { "type": "string", "description": "Human-readable error description." },
+          "willDisconnect": { "type": "boolean", "description": "If true, the server will close the connection after sending this message." },
+          "closeCode": { "type": ["integer", "null"], "description": "WebSocket close code if willDisconnect is true." }
+        }
+      }
+    }
+  },
+
+  "clientMessages": {
+    "description": "Messages sent from connected clients to Transaction Service via STOMP /app/* destinations.",
+
+    "TOKEN_REFRESH": {
+      "description": "Client sends a new JWT access token to update the connection's authentication context. Must be sent within 60 seconds of receiving TOKEN_EXPIRING.",
+      "destination": "/app/token-refresh",
+      "requirements": ["Req 35.5", "Req 35.6"],
+      "payload": {
+        "type": "object",
+        "required": ["messageType", "token"],
+        "properties": {
+          "messageType": { "type": "string", "const": "TOKEN_REFRESH" },
+          "token": { "type": "string", "description": "New JWT access token obtained via the refresh flow." }
+        }
+      },
+      "responses": {
+        "success": "Server updates connection auth context silently (no response message).",
+        "failure": "Server sends ERROR message with code AUTH_EXPIRED and closes connection with code 4001."
+      }
+    }
+  },
+
+  "channelAuthorizationMatrix": {
+    "description": "Defines which roles can subscribe to which STOMP destinations. Enforced by Transaction Service on SUBSCRIBE frames.",
+    "rules": [
+      {
+        "destination": "/topic/courts/{courtId}/availability",
+        "allowedRoles": ["CUSTOMER", "COURT_OWNER", "SUPPORT_AGENT", "PLATFORM_ADMIN"],
+        "constraint": "Public data. No customer identity in messages.",
+        "requirement": "Req 35.11"
+      },
+      {
+        "destination": "/user/queue/bookings",
+        "allowedRoles": ["CUSTOMER", "COURT_OWNER"],
+        "constraint": "CUSTOMER: own bookings only. COURT_OWNER: bookings on own courts only. Enforced via user principal.",
+        "requirement": "Req 35.8, Req 35.9"
+      },
+      {
+        "destination": "/user/queue/notifications",
+        "allowedRoles": ["CUSTOMER", "COURT_OWNER", "SUPPORT_AGENT", "PLATFORM_ADMIN"],
+        "constraint": "Own notifications only. Enforced via user principal.",
+        "requirement": "Req 35.8"
+      },
+      {
+        "destination": "/topic/courts/{courtId}/matches",
+        "allowedRoles": ["CUSTOMER", "COURT_OWNER"],
+        "constraint": "Public match info (player count, skill range). No PII.",
+        "requirement": "Req 24"
+      },
+      {
+        "destination": "/user/queue/matches",
+        "allowedRoles": ["CUSTOMER"],
+        "constraint": "Own match join requests and updates only.",
+        "requirement": "Req 24"
+      },
+      {
+        "destination": "/user/queue/system",
+        "allowedRoles": ["CUSTOMER", "COURT_OWNER", "SUPPORT_AGENT", "PLATFORM_ADMIN"],
+        "constraint": "Automatic — all authenticated connections receive system messages.",
+        "requirement": "Req 35.4"
+      }
+    ]
+  }
+}
