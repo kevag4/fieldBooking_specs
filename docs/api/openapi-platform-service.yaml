@@ -50,6 +50,20 @@ tags:
     description: Court owner payment onboarding
   - name: Support
     description: Support ticket submission and management
+  - name: Subscription
+    description: Court owner subscription billing management
+  - name: Settings
+    description: Court owner personal settings, notification preferences, and reminder rules
+  - name: Dashboard
+    description: Court owner dashboard overview
+  - name: Audit Log
+    description: Court owner audit trail
+  - name: Search
+    description: Global search across bookings, courts, and promo codes
+  - name: Bulk Operations
+    description: Bulk court and booking operations
+  - name: Verification
+    description: Court owner verification management
 
 security:
   - BearerAuth: []
@@ -1851,6 +1865,588 @@ paths:
               schema:
                 $ref: '#/components/schemas/SupportMetrics'
 
+  # ─── Subscription ──────────────────────────────────────────────────────────
+  /api/subscription:
+    get:
+      tags: [Subscription]
+      summary: Get subscription status
+      description: |
+        Returns the court owner's current subscription details including tier, billing dates,
+        payment method, and invoice history. COURT_OWNER only.
+      operationId: getSubscription
+      responses:
+        '200':
+          description: Subscription details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionDetail'
+    post:
+      tags: [Subscription]
+      summary: Subscribe to a plan
+      description: |
+        Creates a Stripe Subscription for the court owner. Used after trial expires or
+        to reactivate an expired subscription. COURT_OWNER only.
+      operationId: createSubscription
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tier, paymentMethodId]
+              properties:
+                tier:
+                  type: string
+                  enum: [BASIC, PRO]
+                paymentMethodId:
+                  type: string
+                  description: Stripe payment method token from client-side Stripe Elements
+      responses:
+        '201':
+          description: Subscription created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionDetail'
+        '402':
+          description: Payment failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      tags: [Subscription]
+      summary: Change subscription tier
+      description: |
+        Upgrade (immediate proration) or downgrade (end of billing cycle). COURT_OWNER only.
+      operationId: changeSubscriptionTier
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tier]
+              properties:
+                tier:
+                  type: string
+                  enum: [BASIC, PRO]
+      responses:
+        '200':
+          description: Tier changed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionDetail'
+        '422':
+          description: Already on this tier
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags: [Subscription]
+      summary: Cancel subscription
+      description: |
+        Cancels at end of current billing period. Access continues until period end. COURT_OWNER only.
+      operationId: cancelSubscription
+      responses:
+        '200':
+          description: Subscription cancelled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subscriptionId:
+                    type: string
+                    format: uuid
+                  status:
+                    type: string
+                    enum: [CANCEL_AT_PERIOD_END]
+                  accessUntil:
+                    type: string
+                    format: date-time
+        '422':
+          description: Already cancelled
+
+  # ─── Dashboard ──────────────────────────────────────────────────────────────
+  /api/dashboard:
+    get:
+      tags: [Dashboard]
+      summary: Get court owner dashboard overview
+      description: |
+        Returns today's bookings, pending confirmations, revenue, payout info, action-required
+        counts, and recent notifications. COURT_OWNER only.
+      operationId: getDashboard
+      responses:
+        '200':
+          description: Dashboard overview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DashboardOverview'
+
+  # ─── Settings ───────────────────────────────────────────────────────────────
+  /api/settings/notification-preferences:
+    get:
+      tags: [Settings]
+      summary: Get court owner notification preferences
+      operationId: getNotificationPreferences
+      responses:
+        '200':
+          description: Notification preferences
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CourtOwnerNotificationPreferences'
+    put:
+      tags: [Settings]
+      summary: Update court owner notification preferences
+      description: Configure per-event-type channel preferences, do-not-disturb, and email digest.
+      operationId: updateNotificationPreferences
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CourtOwnerNotificationPreferences'
+      responses:
+        '200':
+          description: Preferences updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CourtOwnerNotificationPreferences'
+
+  /api/settings/court-defaults:
+    get:
+      tags: [Settings]
+      summary: Get court defaults
+      operationId: getCourtDefaults
+      responses:
+        '200':
+          description: Court defaults
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CourtDefaults'
+    put:
+      tags: [Settings]
+      summary: Update court defaults
+      description: Default settings applied when creating new courts.
+      operationId: updateCourtDefaults
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CourtDefaults'
+      responses:
+        '200':
+          description: Defaults updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CourtDefaults'
+
+  /api/settings/scheduled-reports:
+    get:
+      tags: [Settings]
+      summary: Get scheduled report configuration
+      operationId: getScheduledReports
+      responses:
+        '200':
+          description: Scheduled report config
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduledReportConfig'
+    put:
+      tags: [Settings]
+      summary: Update scheduled report configuration
+      description: Configure automatic weekly/monthly email reports.
+      operationId: updateScheduledReports
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScheduledReportConfig'
+      responses:
+        '200':
+          description: Config updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduledReportConfig'
+
+  /api/settings/reminder-rules:
+    get:
+      tags: [Settings]
+      summary: List reminder rules
+      description: Returns all reminder check rules for the court owner. Max 10 active rules.
+      operationId: listReminderRules
+      responses:
+        '200':
+          description: Reminder rules
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rules:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ReminderRule'
+                  totalCount:
+                    type: integer
+    post:
+      tags: [Settings]
+      summary: Create reminder rule
+      operationId: createReminderRule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateReminderRuleRequest'
+      responses:
+        '201':
+          description: Rule created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReminderRule'
+        '422':
+          description: Maximum 10 active rules reached
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/settings/reminder-rules/{ruleId}:
+    put:
+      tags: [Settings]
+      summary: Update reminder rule
+      operationId: updateReminderRule
+      parameters:
+        - name: ruleId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateReminderRuleRequest'
+      responses:
+        '200':
+          description: Rule updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReminderRule'
+    delete:
+      tags: [Settings]
+      summary: Delete reminder rule
+      operationId: deleteReminderRule
+      parameters:
+        - name: ruleId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Rule deleted
+
+  # ─── Audit Log ──────────────────────────────────────────────────────────────
+  /api/audit-log:
+    get:
+      tags: [Audit Log]
+      summary: Get court owner audit log
+      description: |
+        Returns immutable audit log entries for the authenticated court owner.
+        Filterable by date range, action type, and resource type. Read-only.
+        PLATFORM_ADMIN can view any court owner's audit log via /api/admin/audit-log.
+      operationId: getAuditLog
+      parameters:
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: actionType
+          in: query
+          schema:
+            type: string
+          description: Comma-separated action types (e.g., COURT_CREATED,BOOKING_CONFIRMED)
+        - name: resourceType
+          in: query
+          schema:
+            type: string
+          description: Comma-separated resource types (e.g., COURT,BOOKING)
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: size
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: sort
+          in: query
+          schema:
+            type: string
+            default: timestamp,desc
+      responses:
+        '200':
+          description: Audit log entries
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditLogResponse'
+
+  # ─── Search ─────────────────────────────────────────────────────────────────
+  /api/search:
+    get:
+      tags: [Search]
+      summary: Global search
+      description: |
+        Searches across bookings (by ID, customer name, date), courts (by name),
+        and promo codes (by code). Results grouped by category. COURT_OWNER only.
+        Supports keyboard shortcut Ctrl+K in admin portal.
+      operationId: globalSearch
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 2
+        - name: types
+          in: query
+          schema:
+            type: string
+            default: BOOKING,COURT,PROMO_CODE
+          description: Comma-separated result types to include
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+      responses:
+        '200':
+          description: Search results grouped by category
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResults'
+
+  # ─── Bulk Operations ────────────────────────────────────────────────────────
+  /api/courts/bulk-update:
+    post:
+      tags: [Bulk Operations]
+      summary: Bulk update courts
+      description: |
+        Apply changes to multiple courts in a single operation: pricing, availability,
+        cancellation policy, confirmation mode, enable/disable. Each court validated
+        independently. COURT_OWNER only.
+      operationId: bulkUpdateCourts
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [courtIds, changes]
+              properties:
+                courtIds:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+                changes:
+                  type: object
+                  properties:
+                    basePrice:
+                      type: number
+                      format: decimal
+                      nullable: true
+                    confirmationMode:
+                      $ref: '#/components/schemas/BookingConfirmationMode'
+                    waitlistEnabled:
+                      type: boolean
+                      nullable: true
+                    cancellationPolicy:
+                      $ref: '#/components/schemas/CancellationPolicy'
+                    availabilityWindows:
+                      type: array
+                      items:
+                        $ref: '#/components/schemas/AvailabilityWindow'
+                      nullable: true
+      responses:
+        '207':
+          description: Multi-status with per-court results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BulkCourtUpdateResult'
+
+  # ─── Verification ───────────────────────────────────────────────────────────
+  /api/verification:
+    post:
+      tags: [Verification]
+      summary: Submit verification documents
+      description: |
+        Court owner submits business documents for verification. Creates a PENDING_REVIEW request.
+        Only one pending request allowed at a time.
+      operationId: submitVerification
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [businessName, taxId, businessType, businessAddress, proofDocument]
+              properties:
+                businessName:
+                  type: string
+                taxId:
+                  type: string
+                businessType:
+                  type: string
+                  enum: [SOLE_PROPRIETOR, COMPANY, ASSOCIATION]
+                businessAddress:
+                  type: string
+                proofDocument:
+                  type: string
+                  format: binary
+                  description: PDF/JPEG/PNG, max 10MB
+      responses:
+        '201':
+          description: Verification request created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerificationRequest'
+        '409':
+          description: Verification already pending
+    get:
+      tags: [Verification]
+      summary: Get verification status
+      description: Returns the court owner's current verification status and request history.
+      operationId: getVerificationStatus
+      responses:
+        '200':
+          description: Verification status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerificationStatus'
+
+  /api/admin/verifications:
+    get:
+      tags: [Verification, Admin]
+      summary: List pending verification requests
+      description: Returns all pending verification requests. PLATFORM_ADMIN only.
+      operationId: adminListVerifications
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [PENDING_REVIEW, APPROVED, REJECTED]
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: size
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: Verification requests
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerificationListResponse'
+
+  /api/admin/verifications/{requestId}/approve:
+    post:
+      tags: [Verification, Admin]
+      summary: Approve verification request
+      operationId: adminApproveVerification
+      parameters:
+        - name: requestId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                notes:
+                  type: string
+                  nullable: true
+      responses:
+        '200':
+          description: Verification approved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerificationRequest'
+
+  /api/admin/verifications/{requestId}/reject:
+    post:
+      tags: [Verification, Admin]
+      summary: Reject verification request
+      operationId: adminRejectVerification
+      parameters:
+        - name: requestId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason:
+                  type: string
+      responses:
+        '200':
+          description: Verification rejected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerificationRequest'
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Components
@@ -3153,3 +3749,507 @@ components:
         correlationId:
           type: string
           description: Request correlation ID for tracing
+
+    # ─── Subscription ───────────────────────────────────────────────────────
+    SubscriptionDetail:
+      type: object
+      properties:
+        subscriptionId:
+          type: string
+          description: Stripe Subscription ID
+        tier:
+          type: string
+          enum: [BASIC, PRO]
+        status:
+          type: string
+          enum: [TRIALING, ACTIVE, PAST_DUE, EXPIRED, CANCELLED]
+        trialEndsAt:
+          type: string
+          format: date-time
+          nullable: true
+        currentPeriodStart:
+          type: string
+          format: date-time
+        currentPeriodEnd:
+          type: string
+          format: date-time
+        nextBillingDate:
+          type: string
+          format: date-time
+          nullable: true
+        monthlyPriceCents:
+          type: integer
+          description: Price in euro cents
+        paymentMethodLast4:
+          type: string
+          nullable: true
+        paymentMethodBrand:
+          type: string
+          nullable: true
+        cancelAtPeriodEnd:
+          type: boolean
+        invoiceHistory:
+          type: array
+          items:
+            type: object
+            properties:
+              invoiceId:
+                type: string
+              amountCents:
+                type: integer
+              status:
+                type: string
+                enum: [PAID, OPEN, VOID, UNCOLLECTIBLE]
+              invoiceDate:
+                type: string
+                format: date-time
+              invoicePdfUrl:
+                type: string
+                format: uri
+
+    # ─── Dashboard ──────────────────────────────────────────────────────────
+    DashboardOverview:
+      type: object
+      properties:
+        todayBookings:
+          type: integer
+        pendingConfirmations:
+          type: integer
+        revenueThisMonthCents:
+          type: integer
+        nextPayoutDate:
+          type: string
+          format: date
+          nullable: true
+        nextPayoutAmountCents:
+          type: integer
+          nullable: true
+        actionRequired:
+          type: object
+          properties:
+            pendingBookings:
+              type: integer
+            unpaidManualBookings:
+              type: integer
+            expiringPromos:
+              type: integer
+            reminderAlerts:
+              type: integer
+        recentNotifications:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                format: uuid
+              type:
+                type: string
+              message:
+                type: string
+              createdAt:
+                type: string
+                format: date-time
+              read:
+                type: boolean
+
+    # ─── Settings ───────────────────────────────────────────────────────────
+    CourtOwnerNotificationPreferences:
+      type: object
+      properties:
+        preferences:
+          type: array
+          items:
+            type: object
+            properties:
+              eventType:
+                type: string
+                enum:
+                  - NEW_BOOKING
+                  - CANCELLATION
+                  - PENDING_CONFIRMATION
+                  - PAYMENT_RECEIVED
+                  - PAYOUT_COMPLETED
+                  - PAYMENT_DISPUTE
+                  - REMINDER_ALERT
+                  - SUBSCRIPTION_BILLING
+              channels:
+                type: object
+                properties:
+                  email:
+                    type: boolean
+                  push:
+                    type: boolean
+                  inApp:
+                    type: boolean
+        doNotDisturb:
+          type: object
+          nullable: true
+          properties:
+            enabled:
+              type: boolean
+            startTime:
+              type: string
+              format: time
+            endTime:
+              type: string
+              format: time
+        emailDigest:
+          type: object
+          nullable: true
+          properties:
+            enabled:
+              type: boolean
+            frequency:
+              type: string
+              enum: [DAILY]
+
+    CourtDefaults:
+      type: object
+      properties:
+        defaultDurationMinutes:
+          type: integer
+          nullable: true
+        defaultCapacity:
+          type: integer
+          nullable: true
+        defaultConfirmationMode:
+          type: string
+          enum: [INSTANT, MANUAL]
+          nullable: true
+        defaultCancellationPolicy:
+          type: object
+          nullable: true
+          properties:
+            tiers:
+              type: array
+              items:
+                type: object
+                properties:
+                  thresholdHours:
+                    type: integer
+                  refundPercent:
+                    type: integer
+                    minimum: 0
+                    maximum: 100
+        defaultAvailabilityTemplate:
+          type: object
+          nullable: true
+          properties:
+            windows:
+              type: array
+              items:
+                type: object
+                properties:
+                  dayOfWeek:
+                    type: string
+                    enum: [MONDAY, TUESDAY, WEDNESDAY, THURSDAY, FRIDAY, SATURDAY, SUNDAY]
+                  startTime:
+                    type: string
+                    format: time
+                  endTime:
+                    type: string
+                    format: time
+
+    ScheduledReportConfig:
+      type: object
+      properties:
+        weeklyEnabled:
+          type: boolean
+        monthlyEnabled:
+          type: boolean
+        courtIds:
+          oneOf:
+            - type: array
+              items:
+                type: string
+                format: uuid
+            - type: string
+              enum: [ALL]
+        recipientEmail:
+          type: string
+          format: email
+          nullable: true
+          description: Defaults to account email if not set
+
+    # ─── Reminder Rules ─────────────────────────────────────────────────────
+    ReminderRule:
+      type: object
+      properties:
+        ruleId:
+          type: string
+          format: uuid
+        triggerType:
+          type: string
+          enum:
+            - UNPAID_BOOKING
+            - PAYMENT_HELD_NOT_CAPTURED
+            - PENDING_CONFIRMATION
+            - NO_CONTACT_MANUAL
+            - LOW_OCCUPANCY
+        daysBeforeEvent:
+          type: integer
+          minimum: 1
+          maximum: 30
+        hoursBeforeThreshold:
+          type: integer
+          minimum: 1
+          maximum: 72
+        courtIds:
+          oneOf:
+            - type: array
+              items:
+                type: string
+                format: uuid
+            - type: string
+              enum: [ALL]
+        channels:
+          type: array
+          items:
+            type: string
+            enum: [PUSH, EMAIL, IN_APP]
+          minItems: 1
+        active:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+
+    CreateReminderRuleRequest:
+      type: object
+      required: [triggerType, daysBeforeEvent, hoursBeforeThreshold, courtIds, channels, active]
+      properties:
+        triggerType:
+          type: string
+          enum:
+            - UNPAID_BOOKING
+            - PAYMENT_HELD_NOT_CAPTURED
+            - PENDING_CONFIRMATION
+            - NO_CONTACT_MANUAL
+            - LOW_OCCUPANCY
+        daysBeforeEvent:
+          type: integer
+          minimum: 1
+          maximum: 30
+        hoursBeforeThreshold:
+          type: integer
+          minimum: 1
+          maximum: 72
+        courtIds:
+          oneOf:
+            - type: array
+              items:
+                type: string
+                format: uuid
+            - type: string
+              enum: [ALL]
+        channels:
+          type: array
+          items:
+            type: string
+            enum: [PUSH, EMAIL, IN_APP]
+          minItems: 1
+        active:
+          type: boolean
+
+    # ─── Audit Log ──────────────────────────────────────────────────────────
+    AuditLogEntry:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        timestamp:
+          type: string
+          format: date-time
+        actorId:
+          type: string
+          format: uuid
+        actionType:
+          type: string
+          description: "e.g. COURT_CREATED, BOOKING_CONFIRMED, PRICING_CHANGED, DATA_EXPORTED, CUSTOMER_DATA_ACCESSED"
+        resourceType:
+          type: string
+          description: "e.g. COURT, BOOKING, PRICING_RULE, PROMO_CODE, SETTINGS"
+        resourceId:
+          type: string
+          format: uuid
+        before:
+          type: object
+          nullable: true
+          description: State before the action (null for creates)
+        after:
+          type: object
+          nullable: true
+          description: State after the action (null for deletes)
+        metadata:
+          type: object
+          nullable: true
+          description: Additional context (e.g. rejection reason, export format)
+
+    AuditLogResponse:
+      type: object
+      properties:
+        content:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditLogEntry'
+        page:
+          type: integer
+        size:
+          type: integer
+        totalElements:
+          type: integer
+        totalPages:
+          type: integer
+
+    # ─── Search ─────────────────────────────────────────────────────────────
+    SearchResults:
+      type: object
+      properties:
+        results:
+          type: object
+          properties:
+            bookings:
+              type: array
+              items:
+                type: object
+                properties:
+                  bookingId:
+                    type: string
+                    format: uuid
+                  courtName:
+                    type: string
+                  date:
+                    type: string
+                    format: date
+                  status:
+                    type: string
+            courts:
+              type: array
+              items:
+                type: object
+                properties:
+                  courtId:
+                    type: string
+                    format: uuid
+                  name:
+                    type: string
+                  type:
+                    type: string
+            promoCodes:
+              type: array
+              items:
+                type: object
+                properties:
+                  code:
+                    type: string
+                  discount:
+                    type: string
+                  active:
+                    type: boolean
+        totalCount:
+          type: integer
+
+    # ─── Bulk Operations ────────────────────────────────────────────────────
+    BulkCourtUpdateResult:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              courtId:
+                type: string
+                format: uuid
+              status:
+                type: string
+                enum: [SUCCESS, FAILED]
+              error:
+                type: object
+                nullable: true
+                properties:
+                  code:
+                    type: string
+                  message:
+                    type: string
+        successCount:
+          type: integer
+        failureCount:
+          type: integer
+
+    # ─── Verification ───────────────────────────────────────────────────────
+    VerificationRequest:
+      type: object
+      properties:
+        verificationRequestId:
+          type: string
+          format: uuid
+        courtOwnerId:
+          type: string
+          format: uuid
+        businessName:
+          type: string
+        taxId:
+          type: string
+        businessType:
+          type: string
+          enum: [SOLE_PROPRIETOR, COMPANY, ASSOCIATION]
+        businessAddress:
+          type: string
+        proofDocumentUrl:
+          type: string
+          format: uri
+        status:
+          type: string
+          enum: [PENDING_REVIEW, APPROVED, REJECTED]
+        rejectionReason:
+          type: string
+          nullable: true
+        previousRequestId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Links to prior request if this is a re-submission
+        submittedAt:
+          type: string
+          format: date-time
+        reviewedAt:
+          type: string
+          format: date-time
+          nullable: true
+        reviewedBy:
+          type: string
+          format: uuid
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+
+    VerificationStatus:
+      type: object
+      properties:
+        verified:
+          type: boolean
+        currentRequest:
+          $ref: '#/components/schemas/VerificationRequest'
+          nullable: true
+        history:
+          type: array
+          items:
+            $ref: '#/components/schemas/VerificationRequest'
+
+    VerificationListResponse:
+      type: object
+      properties:
+        verifications:
+          type: array
+          items:
+            $ref: '#/components/schemas/VerificationRequest'
+        totalElements:
+          type: integer
+        page:
+          type: integer
+        size:
+          type: integer

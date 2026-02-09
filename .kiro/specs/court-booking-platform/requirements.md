@@ -541,7 +541,7 @@ graph TD
 ## Court Owner Admin Journey
 
 ### Overview
-The court owner admin journey covers the complete lifecycle from registration through daily court management, designed for the React web admin portal.
+The court owner admin journey covers the complete lifecycle from registration through daily court management, designed for the React web admin portal. Court owners are the supply side of the platform — their experience must be frictionless, powerful, and trustworthy to drive adoption before the mobile app is promoted to customers.
 
 ### Journey Flow
 
@@ -575,19 +575,28 @@ graph TD
     FEATURES --> COURTS[Court Management<br/>Add/Edit/Remove Courts]
     FEATURES --> BOOKINGS_MGT[Booking Management<br/>View/Confirm/Reject/Manual Create]
     FEATURES --> ANALYTICS[Analytics & Revenue<br/>Reports + Payouts]
-    FEATURES --> SETTINGS[Settings<br/>Pricing, Policies, Notifications]
+    FEATURES --> SETTINGS[Personal Settings<br/>Profile, Notifications, Reminders]
+    FEATURES --> AUDIT[Activity Log<br/>All Actions Audited]
     
     COURTS --> ADD_COURT[Add Court<br/>Type, Location, Images<br/>Duration, Capacity, Pricing]
     COURTS --> EDIT_COURT[Edit Court<br/>Update Details, Availability]
     COURTS --> AVAIL[Availability Management<br/>Recurring Windows + Overrides]
+    COURTS --> BULK[Bulk Operations<br/>Multi-Court Pricing/Availability]
     
     BOOKINGS_MGT --> PENDING_LIST[Pending Bookings<br/>Confirm / Reject]
     BOOKINGS_MGT --> MANUAL[Create Manual Booking<br/>Walk-in / Phone]
     BOOKINGS_MGT --> CALENDAR[Calendar View<br/>All Bookings by Court]
+    BOOKINGS_MGT --> REMINDERS[Smart Reminders<br/>Unpaid Booking Alerts]
     
     ANALYTICS --> REVENUE[Revenue Dashboard<br/>Earnings, Fees, Payouts]
     ANALYTICS --> USAGE[Usage Analytics<br/>Peak Hours, Occupancy]
     ANALYTICS --> EXPORT[Export Reports<br/>CSV / PDF]
+    
+    SETTINGS --> PROFILE_CFG[Profile & Business Info<br/>Name, Contact, Tax ID]
+    SETTINGS --> NOTIF_CFG[Notification Preferences<br/>Channels, Quiet Hours]
+    SETTINGS --> REMINDER_CFG[Reminder Check Rules<br/>Unpaid Booking Alerts]
+    SETTINGS --> SECURITY_CFG[Security & Privacy<br/>Sessions, Data Export]
+    SETTINGS --> COURT_DEFAULTS[Court Defaults<br/>Default Pricing, Policies]
     
     SETTINGS --> PRICING_CFG[Dynamic Pricing<br/>Peak/Off-Peak Multipliers]
     SETTINGS --> CANCEL_CFG[Cancellation Policy<br/>Time-Based Refund Tiers]
@@ -602,9 +611,17 @@ graph TD
 - Court owner opens admin web portal
 - Registers via OAuth (Google, Facebook, Apple) with COURT_OWNER role
 - Accepts terms and conditions
-- Enters business information for verification
+- Enters business information for verification:
+  - Legal business name, tax ID (AFM for Greece), contact phone, business address
+  - Business type (sole proprietor, company, association)
+  - Proof of court ownership or lease (document upload, max 10MB PDF/image)
 - Verification status: Pending → can set up courts but they remain hidden from customers
 - Verification status: Approved → courts become publicly visible
+- Verification status: Rejected → clear rejection reason displayed, option to re-submit with corrections
+- **Error cases:**
+  - OAuth provider unavailable → show error with retry option and alternative providers
+  - Document upload fails → show file size/format requirements, allow retry without losing form data
+  - Duplicate business registration detected → prompt to contact support with existing account reference
 
 **Step 2: Stripe Connect Onboarding**
 - Prominent banner: "Complete payment setup to accept customer bookings"
@@ -613,18 +630,28 @@ graph TD
 - Bank account linking for payouts
 - Status tracking: Pending → Active → (Restricted if compliance issues)
 - Until complete: manual bookings work, customer bookings blocked
+- **Error cases:**
+  - Stripe onboarding abandoned mid-flow → save progress, show "Resume Setup" button on next login
+  - Identity verification fails → display Stripe's specific requirements, link to re-submit
+  - Bank account verification fails → show clear instructions for IBAN format, allow retry
+  - Stripe account restricted → display restriction reason from Stripe, link to resolution steps
 
 **Step 3: Trial & Subscription**
 - 30-day free trial starts on registration
-- Trial banner shows remaining days
-- When trial expires: prompt to subscribe (Basic/Pro tiers)
+- Trial banner shows remaining days with countdown
+- When trial expires: prompt to subscribe (Basic/Pro tiers) with feature comparison
 - If subscription lapses: read-only access to existing data, no new manual bookings, customer-facing courts remain visible
+- **Error cases:**
+  - Payment method declined during subscription → show decline reason, allow alternative payment method
+  - Subscription webhook delayed → grace period of 7 days, show "Payment processing" status
 
 **Step 4: Dashboard**
 - Overview metrics: today's bookings, pending confirmations, revenue this month
 - Quick actions: confirm pending bookings, create manual booking
 - Notifications feed: new bookings, cancellations, payment disputes
 - Payout status and next scheduled payout date
+- **Smart reminder alerts:** configurable alerts for bookings that need attention (e.g., unpaid bookings approaching their date)
+- **Action required badges:** count of items needing attention (pending confirmations, unpaid bookings, expiring promos)
 
 **Step 5: Court Management**
 - **Add Court:**
@@ -632,40 +659,65 @@ graph TD
   - Court type selection (Tennis, Padel, Basketball, 5x5 Football)
   - Location type (Indoor/Outdoor)
   - Address with map pin for geospatial coordinates
-  - Image upload (validated formats and sizes)
+  - Image upload (validated formats: JPEG, PNG, WebP; max 5MB per image, max 10 images per court)
   - Booking duration (override type default or use standard)
   - Maximum capacity (override type default or use standard)
   - Base price setting
   - Booking confirmation mode (Instant / Manual)
   - Waitlist enabled/disabled
+  - **Error cases:**
+    - Invalid address / geocoding fails → show map for manual pin placement
+    - Image upload fails → show format/size requirements, allow retry without losing other form data
+    - Duplicate court name for same owner → warn but allow (courts distinguished by address)
 - **Edit Court:** Update any field, with validation that changes don't break existing bookings
+  - **Error cases:**
+    - Reducing capacity below existing booking's player count → block change, show affected bookings
+    - Changing duration with existing future bookings → warn, require confirmation, notify affected customers
 - **Remove Court:** Only allowed if no future confirmed bookings exist
+  - **Error cases:**
+    - Court has future bookings → show list of affected bookings, require cancellation first
+    - Court has pending payouts → block deletion until payouts settle
 - **Availability Management:**
   - Recurring weekly schedule (e.g., Mon-Fri 8:00-22:00, Sat-Sun 9:00-20:00)
   - Manual date/time overrides for maintenance, holidays, private events
   - Visual calendar showing availability windows and existing bookings
+  - **Bulk availability update:** apply schedule changes to multiple courts at once
+- **Bulk Operations (Power-User):**
+  - Select multiple courts → apply pricing changes, availability windows, or policy updates in one action
+  - Bulk enable/disable courts (e.g., seasonal closure)
+  - Copy settings from one court to another
 
 **Step 6: Booking Management**
 - **Calendar View:** Daily/weekly/monthly view of all bookings across all courts
-  - Color-coded by status: Confirmed (green), Pending (yellow), Cancelled (red), Manual (blue)
-  - Filter by court, court type, status
+  - Color-coded by status: Confirmed (green), Pending (yellow), Cancelled (red), Manual (blue), Unpaid (orange)
+  - Filter by court, court type, status, payment status
+  - **Export calendar** to iCal format for external calendar integration
 - **Pending Bookings Queue:**
   - List of bookings awaiting confirmation (for courts in "manual" mode)
   - Customer details, requested time, payment held amount
   - Confirm or Reject buttons with optional message to customer
   - Countdown timer showing time until auto-cancellation
+  - **Bulk confirm/reject** for multiple pending bookings
 - **Manual Booking Creation:**
   - Select court and time slot
   - Optional customer name/phone/email for records
   - No payment processing — just blocks the slot
   - Same conflict prevention as customer bookings
+  - **Recurring manual booking** option (weekly repeat)
 - **Booking Details:** Full view with customer info, payment status, audit trail
+  - Complete history of all status changes with timestamps and actor
+  - Payment timeline: authorized → captured → transferred → paid out
+- **Smart Reminder Notifications:**
+  - Dashboard widget showing bookings that match reminder rules
+  - Example: "Court A booked for Saturday, not paid, 3 days away — check if still valid"
+  - One-click actions: contact customer (email compose or click-to-call), cancel booking, mark as paid, extend deadline
 
 **Step 7: Pricing & Policies**
 - **Dynamic Pricing:**
   - Configure peak/off-peak multipliers by day of week and time of day
   - Special pricing for holidays and events
   - Preview how pricing affects displayed prices
+  - **Bulk pricing:** apply same pricing rules to multiple courts
 - **Cancellation Policy:**
   - Configure time-based refund tiers (e.g., 24h+ = 100%, 12-24h = 50%, <12h = 0%)
   - Platform fee always non-refundable (shown as info)
@@ -674,29 +726,110 @@ graph TD
   - Create codes with discount type (% or fixed), validity period, usage limits
   - Track usage and redemption analytics
   - Applicable court type restrictions
+  - **Duplicate/clone** existing promo codes with modifications
 
 **Step 8: Analytics & Revenue**
 - **Revenue Dashboard:**
   - Total earnings, platform fees deducted, net payouts
   - Payout history and schedule (daily/weekly/monthly via Stripe Connect)
   - Revenue breakdown by court and court type
+  - **Comparison periods:** this month vs last month, this year vs last year
 - **Usage Analytics:**
   - Booking patterns: peak hours, busiest days
   - Occupancy rates per court
   - Customer demographics and repeat booking rates
+  - **No-show tracking:** bookings where customers didn't appear (manual flag by court owner)
 - **Export:** Download reports in CSV or PDF format
+  - **Scheduled reports:** configure automatic weekly/monthly email reports
 
-**Step 9: Settings & Notifications**
-- Booking confirmation mode per court (Instant/Manual)
-- Waitlist enable/disable per court
-- Notification preferences (email, push, in-app for booking events)
-- Court ownership transfer to another verified account
-- Account management (profile, linked OAuth providers, account deletion)
+**Step 9: Personal Settings**
+- **Profile & Business Information:**
+  - Display name, business name, tax ID, contact phone, business address
+  - Profile photo / business logo upload
+  - Linked OAuth providers management (add/remove)
+  - Language preference (Greek / English)
+- **Notification Preferences:**
+  - Channel preferences per event type (email, push, in-app):
+    - New booking received
+    - Booking cancelled
+    - Pending booking awaiting confirmation
+    - Payment received / payout completed
+    - Payment dispute opened
+    - Reminder check alerts (see below)
+    - Subscription billing events
+  - Do-not-disturb hours (e.g., 23:00-07:00)
+  - Email digest option: receive daily summary instead of individual emails
+- **Reminder Check Rules (Configurable Smart Alerts):**
+  - Court owners can create custom reminder rules for proactive booking management
+  - Each rule defines: trigger condition, notification timing, and action suggestions
+  - **Default rule (pre-configured, editable):** "If a booking is not paid X days before the event, send me a reminder Y hours before that threshold"
+  - **Configurable parameters per rule:**
+    - Days before event threshold (e.g., 3 days)
+    - Hours before threshold to send reminder (e.g., 10 hours)
+    - Which courts the rule applies to (all courts, or specific courts)
+    - Notification channels for this rule (push, email, in-app)
+    - Active/inactive toggle per rule
+  - **Example scenario:** Court booked for Saturday 10:00. Rule: "unpaid 3 days before → remind 10 hours before threshold." Wednesday 10:00 is 3 days before. Reminder fires Tuesday 00:00 (10 hours before Wednesday 10:00): "Court A is booked for Saturday 10:00 and not paid. 3 days until event. Check if still valid."
+  - **Additional rule templates:**
+    - "Pending confirmation not acted on for X hours" → reminder
+    - "Manual booking with no customer contact info for X days" → reminder
+    - "Court with no bookings for next X days" → suggestion to create promo
+  - Maximum 10 active rules per court owner
+- **Court Defaults:**
+  - Default booking duration, capacity, confirmation mode, cancellation policy for new courts
+  - Default availability template (apply to new courts automatically)
+- **Security & Privacy:**
+  - Active sessions list with device info, last activity, and "Revoke" button
+  - Two-factor authentication option (TOTP via authenticator app)
+  - Data export request (GDPR: download all personal data as JSON/CSV)
+  - Account deletion request with clear consequences explained
+  - Audit log of all security-sensitive actions (login, password change, session revocation)
+- **Keyboard Shortcuts (Power-User):**
+  - Quick navigation shortcuts displayed in settings
+  - `Ctrl+N` → new manual booking, `Ctrl+K` → search bookings, `Ctrl+Shift+C` → calendar view
 - **Help & Support access:**
   - Searchable FAQ / Help Center
   - Submit support ticket (with auto-attached Stripe/subscription context)
   - Dedicated "Payout Issues" category
   - View existing tickets and conversation thread
+
+### Admin UI Error Handling Principles
+
+The admin web portal follows consistent error handling patterns:
+- **Form validation:** Inline field-level validation with clear error messages. Never lose user input on validation failure.
+- **Network errors:** Toast notification with retry option. Auto-retry for idempotent operations (GET requests) with exponential backoff.
+- **Concurrent edit conflicts:** If another session modified the same resource, show a diff and let the court owner choose which version to keep.
+- **Session expiry:** Redirect to login with "session expired" message. Preserve the current URL for redirect after re-authentication.
+- **Rate limiting:** Show "Too many requests, please wait" with countdown timer. Never silently drop user actions.
+- **Partial failures in bulk operations:** Show per-item success/failure status. Allow retry of failed items only.
+
+### Admin UI Security Principles
+
+- **Personal data masking:** Customer phone numbers and emails are partially masked in booking lists (e.g., `+30 69** *** *45`, `k***@gmail.com`). Full details visible only in booking detail view with audit log entry.
+- **Session timeout:** Auto-logout after 30 minutes of inactivity with warning at 25 minutes.
+- **Audit trail:** Every court owner action (create, update, delete, confirm, reject, export) is logged with timestamp, actor, IP address, and before/after values for data changes.
+- **Data export controls:** Revenue and customer data exports are logged and rate-limited (max 10 exports per day).
+- **Role isolation:** Court owners can only see and manage their own courts, bookings, and data. No cross-owner data leakage.
+
+### Court Owner Audit Log
+
+Every action performed by a court owner in the admin portal is recorded in an immutable audit log:
+
+| Field | Description |
+|-------|-------------|
+| `timestamp` | ISO 8601 timestamp of the action |
+| `actorId` | Court owner's user ID |
+| `actorIp` | IP address of the request |
+| `action` | Action type (e.g., `COURT_CREATED`, `BOOKING_CONFIRMED`, `PRICING_UPDATED`, `DATA_EXPORTED`) |
+| `resourceType` | Entity type (e.g., `COURT`, `BOOKING`, `PROMO_CODE`, `SETTING`) |
+| `resourceId` | ID of the affected entity |
+| `before` | JSON snapshot of the entity before the change (null for creates) |
+| `after` | JSON snapshot of the entity after the change (null for deletes) |
+| `metadata` | Additional context (e.g., rejection reason, export format) |
+
+- Court owners can view their own audit log in the admin portal (read-only, filterable by date range, action type, resource type)
+- Platform admins can view audit logs for any court owner
+- Audit logs are retained for 2 years and are immutable (no edit or delete)
 
 ## Glossary
 
@@ -783,6 +916,15 @@ graph TD
 - **Booking_Confirmation_Mode**: Court-level setting that determines whether bookings are confirmed instantly or require manual court owner approval
 - **Cancellation_Policy_Tier**: A time-based refund rule specifying a threshold (hours before booking) and corresponding refund percentage
 - **Trial_Period**: Free access period granted to new court owners for full platform features including manual booking management
+- **Reminder_Check_Rule**: Court owner-configurable rule that triggers proactive notifications about bookings needing attention (e.g., unpaid bookings approaching their date)
+- **Audit_Trail**: Immutable log of all court owner actions with timestamps, actor, IP, and before/after state snapshots for accountability and dispute resolution
+- **Bulk_Operation**: Admin action applied to multiple courts or bookings simultaneously (e.g., bulk pricing update, bulk confirm/reject)
+- **Personal_Data_Masking**: Partial redaction of customer PII (phone, email) in list views to protect privacy; full data accessible only in detail views with audit logging
+- **Court_Defaults**: Court owner-configured default settings (duration, capacity, policies) automatically applied when creating new courts
+- **Verification_Request**: Court owner submission of business documents for platform review, tracked through states: PENDING_REVIEW → APPROVED / REJECTED
+- **No_Show**: A completed booking where the customer did not appear, manually flagged by the court owner within 24 hours after the booking's scheduled end time
+- **Web_Push**: Browser-based push notifications (W3C Push API with VAPID keys) used to deliver notifications to court owners via the admin web portal when the browser is closed
+- **Paid_Externally**: Status flag on manual bookings indicating the court owner received offline payment (cash, bank transfer), clearing unpaid booking reminder triggers
 - **Notification_Urgency_Level**: Classification of notifications as CRITICAL (always immediate), STANDARD (respects quiet hours), or PROMOTIONAL (respects opt-out)
 - **Access_Token**: Short-lived JWT (15 minutes) containing user identity and role claims, validated independently by both services using a shared public key (RS256)
 - **Refresh_Token**: Long-lived token (30 days) stored server-side, used to obtain new access tokens without re-authentication. Rotated on each use with replay detection
@@ -845,13 +987,21 @@ The platform defines three roles with distinct permission boundaries:
 | Manage favorites/preferences | ✓ | ✗ | ✗ |
 | Create/edit/remove courts | ✗ | ✓ (own courts) | ✗ |
 | Configure availability/pricing | ✗ | ✓ (own courts) | ✗ |
+| Bulk court operations | ✗ | ✓ (own courts) | ✗ |
 | Create manual bookings | ✗ | ✓ (own courts, active subscription) | ✗ |
 | Confirm/reject pending bookings | ✗ | ✓ (own courts) | ✗ |
+| Bulk confirm/reject bookings | ✗ | ✓ (own courts) | ✗ |
 | View analytics/revenue | ✗ | ✓ (own courts) | ✓ (platform-wide) |
+| Export data (CSV/PDF) | ✗ | ✓ (own courts, rate-limited) | ✓ (platform-wide) |
 | Create court-level promo codes | ✗ | ✓ (own courts) | ✗ |
 | Create platform-wide promo codes | ✗ | ✗ | ✓ |
+| Manage personal settings | ✓ (own) | ✓ (own) | ✓ (own) |
+| Configure reminder rules | ✗ | ✓ (own rules) | ✗ |
+| View own audit log | ✗ | ✓ (own actions) | ✗ |
+| View any audit log | ✗ | ✗ | ✓ |
 | Manage feature flags | ✗ | ✗ | ✓ |
 | Manage users (suspend/unsuspend) | ✗ | ✗ | ✓ |
+| Review verification requests | ✗ | ✗ | ✓ |
 | Handle escalated disputes | ✗ | ✗ | ✓ |
 | View system health/observability | ✗ | ✗ | ✓ |
 | Configure platform settings | ✗ | ✗ | ✓ |
@@ -924,14 +1074,26 @@ Internal HTTP calls between Platform Service and Transaction Service (within the
 
 #### Acceptance Criteria
 
-1. WHEN a court owner registers a new court, THE Platform_Service SHALL validate court information and store it with geospatial coordinates
+1. WHEN a court owner registers a new court, THE Platform_Service SHALL validate court information and store it with geospatial coordinates.
+   - **Input:** `{ name: string, description: { el: string, en: string }, courtType: enum(TENNIS|PADEL|BASKETBALL|FOOTBALL_5X5), locationType: enum(INDOOR|OUTDOOR), address: string, latitude: number, longitude: number, bookingDurationMinutes: number, maxCapacity: number, basePriceCents: number, confirmationMode: enum(INSTANT|MANUAL), waitlistEnabled: boolean, images: File[] }`
+   - **Output (success):** `201 Created` with `{ courtId: UUID, status: "HIDDEN"|"VISIBLE", createdAt: ISO8601 }`
+   - **Output (validation error):** `400 Bad Request` with `{ errors: [{ field: string, message: string }] }`
+   - **Output (unauthorized/unverified):** `403 Forbidden` with `{ error: "COURT_OWNER_NOT_VERIFIED" }` (court is created but hidden)
 2. WHEN a court owner adds multiple courts, THE Platform_Service SHALL support adding courts of the same or different types (tennis, padel, basketball, 5x5 football)
 3. WHEN a court owner configures a court, THE Platform_Service SHALL require selection of location type (indoor or outdoor)
 4. WHEN a court owner configures a court type, THE Platform_Service SHALL allow setting default booking duration (e.g., 60 minutes, 90 minutes, 120 minutes)
 5. WHEN a court owner configures a court type, THE Platform_Service SHALL allow setting maximum capacity (number of people allowed per booking)
 6. WHEN a court owner configures court-specific settings, THE Platform_Service SHALL allow overriding default type settings for individual courts
 7. WHEN a court owner removes a court, THE Platform_Service SHALL validate that no future confirmed bookings exist before allowing deletion
+   - **Input:** `DELETE /api/courts/{courtId}`
+   - **Output (success):** `204 No Content`
+   - **Output (has future bookings):** `409 Conflict` with `{ error: "COURT_HAS_FUTURE_BOOKINGS", bookingCount: number, nextBookingDate: ISO8601 }`
+   - **Output (has pending payouts):** `409 Conflict` with `{ error: "COURT_HAS_PENDING_PAYOUTS", pendingAmount: number }`
 8. WHEN court information is updated, THE Platform_Service SHALL validate changes and propagate updates to all dependent services
+   - **Input:** `PUT /api/courts/{courtId}` with partial update body (same fields as create, all optional). Includes `version: number` for optimistic locking.
+   - **Output (success):** `200 OK` with updated court object including new `version` number
+   - **Output (conflict):** `409 Conflict` with `{ error: "CONCURRENT_MODIFICATION", currentVersion: number }` when version mismatch
+   - **Output (affects bookings):** `422 Unprocessable Entity` with `{ error: "CHANGE_AFFECTS_BOOKINGS", affectedBookings: [{ bookingId, date, impact: string }], requiresConfirmation: true }` — client must re-submit with `{ confirmed: true }` to proceed
 9. THE Platform_Service SHALL support multiple court types (tennis, padel, basketball, 5x5 football) with type-specific attributes
 10. WHEN court images are uploaded, THE Platform_Service SHALL store them in Spaces and validate file formats and sizes
 11. WHEN availability windows are configured, THE Platform_Service SHALL provide an intuitive interface for setting recurring availability patterns (daily, weekly, custom)
@@ -944,6 +1106,34 @@ Internal HTTP calls between Platform Service and Transaction Service (within the
 18. THE Platform_Service SHALL support court ownership transfer to another verified court owner account
 19. THE Platform_Service SHALL allow customers to rate and review courts after completed bookings
 20. THE Platform_Service SHALL display average ratings and recent reviews on court detail pages
+
+**Court Owner Verification Process:**
+21. WHEN a court owner submits verification documents (business name, tax ID, proof of court ownership/lease), THE Platform_Service SHALL create a verification request with status `PENDING_REVIEW` and notify PLATFORM_ADMIN users
+   - **Input:** `{ businessName: string, taxId: string, businessType: enum(SOLE_PROPRIETOR|COMPANY|ASSOCIATION), businessAddress: string, proofDocument: File (PDF/JPEG/PNG, max 10MB) }`
+   - **Output (success):** `201 Created` with `{ verificationRequestId: UUID, status: "PENDING_REVIEW", submittedAt: ISO8601 }`
+   - **Output (already pending):** `409 Conflict` with `{ error: "VERIFICATION_ALREADY_PENDING", existingRequestId: UUID }`
+22. THE Platform_Service SHALL provide PLATFORM_ADMIN users with a verification queue showing all pending verification requests, sortable by submission date
+23. WHEN a PLATFORM_ADMIN reviews a verification request, THE Platform_Service SHALL allow approval or rejection with a mandatory reason field (rejection reason is displayed to the court owner)
+   - **Approve Input:** `POST /api/admin/verifications/{requestId}/approve` with `{ notes?: string }`
+   - **Approve Output:** `200 OK` with `{ requestId: UUID, status: "APPROVED", courtOwnerId: UUID, approvedAt: ISO8601 }`
+   - **Reject Input:** `POST /api/admin/verifications/{requestId}/reject` with `{ reason: string }` (required)
+   - **Reject Output:** `200 OK` with `{ requestId: UUID, status: "REJECTED", reason: string, rejectedAt: ISO8601 }`
+24. WHEN a verification request is approved, THE Platform_Service SHALL update the court owner's `verified` status to `true`, refresh the JWT claim on next token refresh, and make all their courts publicly visible
+25. WHEN a verification request is rejected, THE Platform_Service SHALL notify the court owner via email and in-app notification with the rejection reason and a "Re-submit" option
+26. WHEN a court owner re-submits after rejection, THE Platform_Service SHALL create a new verification request linked to the previous one so the reviewer can see the history
+27. THE Platform_Service SHALL target a verification turnaround SLA of 48 hours from submission. WHEN a verification request has been pending for more than 48 hours, THE Platform_Service SHALL send a reminder notification to PLATFORM_ADMIN users
+28. WHEN a court owner updates business information that was part of the original verification (business name, tax ID, business address), THE Platform_Service SHALL flag the profile for re-verification review without revoking current verified status — courts remain visible during re-review
+
+**Court Ownership Transfer:**
+29. WHEN a court owner initiates a transfer of court ownership, THE Platform_Service SHALL require the target account to be a verified court owner with active Stripe Connect
+   - **Initiate Input:** `POST /api/courts/{courtId}/transfer` with `{ targetOwnerEmail: string }`
+   - **Initiate Output (success):** `200 OK` with `{ transferId: UUID, status: "PENDING_TARGET_CONFIRMATION", targetOwnerEmail: string(masked), expiresAt: ISO8601 }`
+   - **Initiate Output (invalid target):** `422 Unprocessable Entity` with `{ error: "TARGET_NOT_ELIGIBLE", reason: "NOT_VERIFIED"|"STRIPE_NOT_CONNECTED"|"USER_NOT_FOUND" }`
+   - **Confirm Input (by target):** `POST /api/courts/transfers/{transferId}/confirm`
+   - **Confirm Output:** `200 OK` with `{ transferId: UUID, status: "COMPLETED", courtId: UUID, newOwnerId: UUID }`
+30. WHEN court ownership is transferred, THE Platform_Service SHALL reassign all future bookings to the new owner's Stripe Connect account for payout purposes, transfer all court configuration and availability settings, and record the transfer in both owners' audit logs
+31. WHEN court ownership is transferred, THE Platform_Service SHALL NOT transfer the original owner's subscription, analytics history, or personal settings — only the court entity and its future bookings
+32. THE Platform_Service SHALL require both the source and target court owners to confirm the transfer before it is executed
 
 ### Requirement 3: Location-Based Court Discovery
 
@@ -1059,8 +1249,12 @@ Internal HTTP calls between Platform Service and Transaction Service (within the
 #### Acceptance Criteria
 
 1. WHEN a court owner creates a manual booking, THE Transaction_Service SHALL validate availability and create the booking without payment processing
+   - **Input:** `{ courtId: UUID, date: ISO8601-date, startTime: HH:mm, durationMinutes: number, customerName?: string, customerPhone?: string, customerEmail?: string, notes?: string, recurring?: { frequencyWeeks: 1, durationWeeks: number(1-12) } }`
+   - **Output (success):** `201 Created` with `{ bookingId: UUID, status: "CONFIRMED", type: "MANUAL", paymentStatus: "NOT_REQUIRED", createdAt: ISO8601 }` (or array of bookings if recurring)
+   - **Output (conflict):** `409 Conflict` with `{ error: "TIME_SLOT_UNAVAILABLE", conflictingBookingId: UUID }`
+   - **Output (partial recurring conflict):** `207 Multi-Status` with `{ created: [{ bookingId, date }], conflicts: [{ date, reason }] }`
 2. WHEN a manual booking is created, THE Transaction_Service SHALL mark the time slot as unavailable for customer bookings
-3. WHEN a court owner creates a manual booking, THE Transaction_Service SHALL allow optional customer information entry for record-keeping
+3. WHEN a court owner creates a manual booking, THE Transaction_Service SHALL allow optional customer information entry for record-keeping: `customerName`, `customerPhone`, `customerEmail`, and free-text `notes`
 4. WHEN manual bookings are created, THE Transaction_Service SHALL maintain the same conflict prevention mechanisms as customer bookings
 5. THE admin web application SHALL provide court owners with a standalone booking management interface that works independently of the customer-facing platform
 6. WHEN a new court owner registers, THE Platform_Service SHALL grant a configurable free trial period (default: 30 days) for full platform access including manual booking features
@@ -1068,6 +1262,12 @@ Internal HTTP calls between Platform Service and Transaction Service (within the
 8. WHEN the trial period is active, THE Platform_Service SHALL display remaining trial days prominently in the admin interface
 9. THE Platform_Service SHALL support configurable subscription tiers (e.g., Basic, Pro) with different feature access levels, managed through the admin portal
 10. WHEN a court owner's subscription lapses, THE Platform_Service SHALL restrict access to manual booking creation while preserving existing booking data and customer-facing court visibility
+
+**Recurring Manual Bookings:**
+11. THE Transaction_Service SHALL allow court owners to create recurring manual bookings on a weekly basis for a configurable duration (default: 4 weeks, maximum: 12 weeks)
+12. WHEN a recurring manual booking is created, THE Transaction_Service SHALL validate availability for all requested dates and create individual manual booking records
+13. WHEN a recurring manual booking conflicts with existing bookings on some dates, THE Transaction_Service SHALL inform the court owner of the conflicting dates and allow partial creation for available dates only
+14. THE Transaction_Service SHALL allow court owners to cancel individual instances of a recurring manual booking independently
 
 ### Requirement 9a: Court Owner Subscription Billing
 
@@ -1119,7 +1319,12 @@ Court owner subscriptions are managed through Stripe Billing (Stripe Subscriptio
 5. WHEN a pending booking is not confirmed, THE Transaction_Service SHALL send reminder notifications to the court owner at configured intervals (default: 1 hour, 4 hours, 12 hours after booking creation)
 6. WHEN the confirmation timeout period expires without court owner response, THE Transaction_Service SHALL automatically cancel the booking, cancel the Stripe PaymentIntent (releasing the authorization hold), and notify the customer
 7. WHEN a court owner confirms a pending booking, THE Transaction_Service SHALL capture the previously authorized PaymentIntent, change the booking status to CONFIRMED, and initiate the Stripe Connect transfer to the court owner's connected account
+   - **Input:** `POST /api/bookings/{bookingId}/confirm` with optional `{ message?: string }` (message sent to customer)
+   - **Output (success):** `200 OK` with `{ bookingId: UUID, status: "CONFIRMED", paymentStatus: "CAPTURED", capturedAmount: number, courtOwnerNet: number }`
+   - **Output (hold expired):** `422 Unprocessable Entity` with `{ error: "AUTHORIZATION_EXPIRED", expiredAt: ISO8601 }`
 8. WHEN a court owner rejects a pending booking, THE Transaction_Service SHALL cancel the Stripe PaymentIntent (releasing the authorization hold) and notify the customer immediately
+   - **Input:** `POST /api/bookings/{bookingId}/reject` with `{ reason: string }` (reason sent to customer)
+   - **Output (success):** `200 OK` with `{ bookingId: UUID, status: "REJECTED", holdReleased: true }`
 9. THE Platform_Service SHALL allow configuration of confirmation timeout periods per court or court owner (default: 24 hours, maximum: 144 hours / 6 days). The maximum is constrained by Stripe's 7-day authorization hold window — the timeout MUST be at least 24 hours shorter than the hold expiration to allow for processing time
 10. WHEN a court owner changes confirmation mode from "instant" to "manual", THE Platform_Service SHALL apply the change only to future bookings
 11. WHEN a Stripe authorization hold is approaching expiration (24 hours before), THE Transaction_Service SHALL auto-cancel the pending booking and release the hold rather than risk a failed capture
@@ -1262,6 +1467,12 @@ For split-payment bookings, the same calculation applies to the total booking am
 20. WHEN users configure do-not-disturb hours, THE Transaction_Service SHALL queue non-urgent notifications and deliver them after the quiet period ends
 21. THE Transaction_Service SHALL send email notifications to court owners for all booking-related events in addition to push and in-app notifications
 
+**Court Owner Web Push Notifications:**
+22. WHEN a court owner logs into the admin web portal, THE admin web application SHALL request browser push notification permission via the Web Push API (W3C Push API with VAPID keys)
+23. WHEN browser push permission is granted, THE Transaction_Service SHALL register the browser push subscription endpoint and associate it with the court owner's user ID, alongside any FCM mobile device tokens
+24. WHEN a notification event targets a court owner, THE Transaction_Service SHALL deliver via all registered channels: browser push (if admin portal is closed), WebSocket (if admin portal is open), email, and FCM mobile push (if the court owner also has the mobile app installed)
+25. WHEN a court owner revokes browser push permission or clears browser data, THE Transaction_Service SHALL detect the expired subscription on next delivery failure and remove it
+
 ### Requirement 14: Booking Management and History
 
 **User Story:** As a customer, I want to view and manage my booking history, so that I can track my reservations and make changes when needed.
@@ -1269,7 +1480,29 @@ For split-payment bookings, the same calculation applies to the total booking am
 #### Acceptance Criteria
 
 1. WHEN booking history is requested, THE Transaction_Service SHALL return paginated booking records for the authenticated user
+   - **Input (customer):** `GET /api/bookings?page=0&size=20&status=CONFIRMED,COMPLETED&courtType=TENNIS&from=2026-01-01&to=2026-12-31&sort=date,desc`
+   - **Input (court owner):** `GET /api/bookings?page=0&size=20&courtId={uuid}&status=...&paymentStatus=PAID,UNPAID&from=...&to=...&sort=date,desc`
+   - **Output:** `200 OK` with `{ content: [BookingSummary], page: number, size: number, totalElements: number, totalPages: number }`
+   - **BookingSummary:** `{ bookingId: UUID, courtId: UUID, courtName: string, date: ISO8601-date, startTime: HH:mm, durationMinutes: number, status: enum, type: enum(CUSTOMER|MANUAL), paymentStatus: enum, totalAmountCents: number, customerName?: string (masked in list for court owners) }`
 2. WHEN booking details are viewed, THE Transaction_Service SHALL display complete booking information including court details and payment status
+   - **Input:** `GET /api/bookings/{bookingId}`
+   - **Output (for court owner):** `200 OK` with:
+     ```
+     {
+       bookingId: UUID, courtId: UUID, courtName: string,
+       date: ISO8601-date, startTime: HH:mm, durationMinutes: number,
+       status: enum(CONFIRMED|PENDING_CONFIRMATION|CANCELLED|COMPLETED|REJECTED),
+       type: enum(CUSTOMER|MANUAL),
+       customer: { name: string, phone: string, email: string } | null,  // full details (triggers CUSTOMER_DATA_ACCESSED audit)
+       paymentStatus: enum(CAPTURED|AUTHORIZED|REFUNDED|NOT_REQUIRED|PAID_EXTERNALLY),
+       totalAmountCents: number, platformFeeCents: number, courtOwnerNetCents: number,
+       paymentTimeline: [{ event: string, timestamp: ISO8601, details?: string }],
+       noShow: boolean, noShowFlaggedAt?: ISO8601,
+       externalPayment?: { method: string, notes: string, paidAt: ISO8601 },
+       statusHistory: [{ status: string, changedAt: ISO8601, changedBy: UUID, reason?: string }],
+       createdAt: ISO8601, updatedAt: ISO8601, version: number
+     }
+     ```
 3. WHERE cancellation is allowed, THE Transaction_Service SHALL process cancellations according to court owner policies
 4. WHEN booking modifications are requested, THE Transaction_Service SHALL validate availability and process changes atomically
 5. THE Transaction_Service SHALL maintain complete audit trails for all booking operations
@@ -1278,6 +1511,23 @@ For split-payment bookings, the same calculation applies to the total booking am
 8. THE Transaction_Service SHALL support filtering bookings by status (confirmed, pending, cancelled, completed)
 9. THE Transaction_Service SHALL support filtering bookings by date range, court, and court type
 
+**No-Show Tracking:**
+10. THE Transaction_Service SHALL allow court owners to flag a completed booking as a "no-show" via the admin portal within 24 hours after the booking's scheduled end time
+   - **Input:** `POST /api/bookings/{bookingId}/no-show` with optional `{ notes?: string }`
+   - **Output (success):** `200 OK` with `{ bookingId: UUID, noShow: true, flaggedAt: ISO8601 }`
+   - **Output (too late):** `422 Unprocessable Entity` with `{ error: "NO_SHOW_WINDOW_EXPIRED", windowClosedAt: ISO8601 }`
+   - **Output (wrong status):** `422 Unprocessable Entity` with `{ error: "BOOKING_NOT_COMPLETED", currentStatus: string }`
+11. WHEN a booking is flagged as no-show, THE Transaction_Service SHALL record the no-show in the booking record and the customer's booking history (no automatic financial penalty — the court owner already received payment)
+12. THE Platform_Service SHALL include no-show counts in the court owner's analytics dashboard (total no-shows, no-show rate per court, repeat no-show customers)
+13. THE Platform_Service SHALL NOT automatically penalize customers for no-shows. Court owners may use no-show data to inform their cancellation policy decisions. Future: configurable no-show fees can be added as a platform feature
+
+**Manual Booking Payment Tracking:**
+14. THE Transaction_Service SHALL allow court owners to mark manual bookings as "paid externally" with an optional payment note (e.g., "cash", "bank transfer") to track offline payments
+   - **Input:** `POST /api/bookings/{bookingId}/mark-paid` with `{ paymentMethod: string, notes?: string }` (e.g., `{ paymentMethod: "cash", notes: "Paid at reception" }`)
+   - **Output (success):** `200 OK` with `{ bookingId: UUID, paymentStatus: "PAID_EXTERNALLY", paidAt: ISO8601 }`
+   - **Output (not manual):** `422 Unprocessable Entity` with `{ error: "NOT_A_MANUAL_BOOKING" }`
+15. WHEN a manual booking is marked as paid externally, THE Transaction_Service SHALL update the booking's payment status and clear any `UNPAID_BOOKING` reminder triggers for that booking
+
 ### Requirement 15: Analytics and Revenue Tracking
 
 **User Story:** As a court owner, I want to track booking analytics and revenue, so that I can optimize my court management and pricing.
@@ -1285,10 +1535,264 @@ For split-payment bookings, the same calculation applies to the total booking am
 #### Acceptance Criteria
 
 1. WHEN analytics are requested, THE Platform_Service SHALL aggregate booking data and calculate key performance metrics
+   - **Input:** `GET /api/analytics?from=2026-01-01&to=2026-01-31&courtId={uuid?}&courtType={type?}`
+   - **Output:** `200 OK` with:
+     ```
+     {
+       period: { from: ISO8601-date, to: ISO8601-date },
+       totalBookings: number,
+       confirmedBookings: number,
+       cancelledBookings: number,
+       noShows: number,
+       occupancyRate: number (0.0-1.0),
+       revenueGrossCents: number,
+       platformFeesCents: number,
+       revenueNetCents: number,
+       peakHours: [{ dayOfWeek: string, hour: number, bookingCount: number }],
+       courtBreakdown: [{ courtId: UUID, courtName: string, bookings: number, revenueCents: number, occupancyRate: number }],
+       previousPeriodComparison: { bookingsChange: number, revenueChange: number } (percentage)
+     }
+     ```
 2. WHEN revenue reports are generated, THE Platform_Service SHALL include detailed breakdowns of earnings and platform fees
 3. THE Platform_Service SHALL provide time-based analytics showing booking patterns and peak usage periods
 4. WHEN pricing strategies are evaluated, THE Platform_Service SHALL show revenue impact of different pricing configurations
 5. WHERE data export is requested, THE Platform_Service SHALL generate reports in standard formats (CSV, PDF)
+
+**Scheduled Reports:**
+6. THE Platform_Service SHALL allow court owners to configure automated report delivery: weekly summary (every Monday) and/or monthly summary (1st of each month), sent via email
+   - **Input:** `PUT /api/settings/scheduled-reports` with `{ weeklyEnabled: boolean, monthlyEnabled: boolean, courtIds: UUID[] | "ALL", recipientEmail?: string (defaults to account email) }`
+   - **Output (success):** `200 OK` with saved configuration
+7. EACH scheduled report SHALL include: total bookings, revenue breakdown (gross, platform fees, net), occupancy rate per court, no-show count, and comparison with the previous period
+8. THE Platform_Service SHALL allow court owners to enable/disable scheduled reports and choose which courts to include
+9. THE Platform_Service SHALL generate scheduled reports using the read replica to avoid impacting booking performance
+
+**Dashboard Overview:**
+10. THE Platform_Service SHALL provide a dashboard summary endpoint for court owners
+   - **Input:** `GET /api/dashboard`
+   - **Output:** `200 OK` with:
+     ```
+     {
+       todayBookings: number,
+       pendingConfirmations: number,
+       revenueThisMonthCents: number,
+       nextPayoutDate: ISO8601-date | null,
+       nextPayoutAmountCents: number | null,
+       actionRequired: {
+         pendingBookings: number,
+         unpaidManualBookings: number,
+         expiringPromos: number,
+         reminderAlerts: number
+       },
+       recentNotifications: [{ id: UUID, type: string, message: string, createdAt: ISO8601, read: boolean }]
+     }
+     ```
+
+### Requirement 15a: Court Owner Personal Settings and Profile Management
+
+**User Story:** As a court owner, I want to manage my personal settings, business profile, security preferences, and court defaults from a centralized settings page, so that I can control my experience and keep my business information up to date.
+
+#### Acceptance Criteria
+
+**Profile & Business Information:**
+1. THE Platform_Service SHALL allow court owners to update their display name, business name, tax ID (AFM), contact phone, and business address
+   - **Input:** `PUT /api/users/me/profile` with `{ displayName?: string, businessName?: string, taxId?: string, contactPhone?: string, businessAddress?: string, language?: enum(EL|EN) }` (partial updates allowed — only provided fields are updated)
+   - **Output (success):** `200 OK` with updated profile object including `{ userId, displayName, businessName, taxId, contactPhone, businessAddress, language, verified, reVerificationRequired: boolean }`
+   - **Output (validation error):** `400 Bad Request` with `{ errors: [{ field, message }] }`
+   - If `businessName`, `taxId`, or `businessAddress` are changed and the owner is verified, the response includes `reVerificationRequired: true`
+2. THE Platform_Service SHALL allow court owners to upload a profile photo or business logo (max 2MB, JPEG/PNG/WebP)
+3. THE Platform_Service SHALL allow court owners to manage linked OAuth providers (add additional providers, view linked providers)
+4. THE Platform_Service SHALL allow court owners to set their preferred language (Greek / English) which applies to the admin portal UI and email notifications
+5. WHEN a court owner updates business information that was part of the original verification, THE Platform_Service SHALL flag the change for re-verification review without disrupting current operations
+
+**Notification Preferences:**
+6. THE Platform_Service SHALL allow court owners to configure notification channel preferences (email, push, in-app) independently for each event type: new booking, cancellation, pending confirmation, payment received, payout completed, payment dispute, reminder alerts, subscription billing
+   - **Input:** `PUT /api/settings/notification-preferences` with:
+     ```
+     {
+       preferences: [{
+         eventType: enum(NEW_BOOKING|CANCELLATION|PENDING_CONFIRMATION|PAYMENT_RECEIVED|PAYOUT_COMPLETED|PAYMENT_DISPUTE|REMINDER_ALERT|SUBSCRIPTION_BILLING),
+         channels: { email: boolean, push: boolean, inApp: boolean }
+       }],
+       doNotDisturb?: { enabled: boolean, startTime: HH:mm, endTime: HH:mm },
+       emailDigest?: { enabled: boolean, frequency: enum(DAILY) }
+     }
+     ```
+   - **Output (success):** `200 OK` with saved preferences object
+7. THE Platform_Service SHALL allow court owners to configure do-not-disturb hours during which non-critical notifications are queued
+8. THE Platform_Service SHALL allow court owners to opt into a daily email digest that summarizes all events instead of individual notification emails
+9. WHEN do-not-disturb is active, THE Transaction_Service SHALL still deliver CRITICAL notifications (payment disputes, Stripe account restrictions) immediately
+
+**Court Defaults:**
+10. THE Platform_Service SHALL allow court owners to configure default settings for new courts: default booking duration, default capacity, default confirmation mode, default cancellation policy, and default availability template
+   - **Input:** `PUT /api/settings/court-defaults` with:
+     ```
+     {
+       defaultDurationMinutes?: number,
+       defaultCapacity?: number,
+       defaultConfirmationMode?: enum(INSTANT|MANUAL),
+       defaultCancellationPolicy?: { tiers: [{ thresholdHours: number, refundPercent: number }] },
+       defaultAvailabilityTemplate?: { windows: [{ dayOfWeek: enum, startTime: HH:mm, endTime: HH:mm }] }
+     }
+     ```
+   - **Output (success):** `200 OK` with saved defaults object
+11. WHEN a court owner creates a new court, THE Platform_Service SHALL pre-populate the court configuration with the court owner's saved defaults (editable before saving)
+
+**Security & Privacy:**
+12. THE Platform_Service SHALL display a list of active sessions for the court owner showing device type, browser, IP address (partially masked), and last activity timestamp
+13. THE Platform_Service SHALL allow court owners to revoke any active session individually, immediately invalidating that session's refresh token
+14. THE Platform_Service SHALL support optional two-factor authentication (TOTP) via authenticator apps (Google Authenticator, Authy) for court owner accounts
+15. WHEN 2FA is enabled and a court owner completes OAuth authentication, THE Platform_Service SHALL NOT issue JWT tokens immediately. Instead, THE Platform_Service SHALL redirect to a TOTP verification page where the court owner must enter a valid TOTP code. Only after successful TOTP verification SHALL the Platform_Service issue the access and refresh tokens. This applies to every new login session (not to token refresh).
+16. WHEN a court owner enables 2FA for the first time, THE Platform_Service SHALL display a QR code for the authenticator app and require the court owner to enter a valid TOTP code to confirm setup before activation
+17. THE Platform_Service SHALL provide backup recovery codes (one-time use, 10 codes) when 2FA is enabled, in case the court owner loses access to their authenticator app
+18. THE Platform_Service SHALL allow court owners to request a full data export (GDPR Article 20) containing all personal data, court data, booking history, and revenue data in JSON and CSV formats
+19. THE Platform_Service SHALL rate-limit data exports to a maximum of 10 per day per court owner and log each export request in the audit trail
+20. THE Platform_Service SHALL auto-logout court owner sessions after 30 minutes of inactivity, with a warning prompt at 25 minutes allowing session extension
+
+**Keyboard Shortcuts (Power-User):**
+21. THE admin web application SHALL support configurable keyboard shortcuts for frequent actions: new manual booking (`Ctrl+N`), search bookings (`Ctrl+K`), calendar view (`Ctrl+Shift+C`), pending bookings queue (`Ctrl+P`)
+22. THE admin web application SHALL display a keyboard shortcut reference accessible via `?` key or from the settings page
+
+### Requirement 15b: Court Owner Configurable Reminder Notifications
+
+**User Story:** As a court owner, I want to configure smart reminder rules that alert me about bookings needing attention (e.g., unpaid bookings approaching their date), so that I can proactively manage my courts and avoid no-shows or revenue loss.
+
+#### Acceptance Criteria
+
+**Reminder Rule Configuration:**
+1. THE Platform_Service SHALL allow court owners to create, update, and delete reminder check rules from their personal settings
+   - **Create Input:** `POST /api/settings/reminder-rules` with:
+     ```
+     {
+       triggerType: enum(UNPAID_BOOKING|PAYMENT_HELD_NOT_CAPTURED|PENDING_CONFIRMATION|NO_CONTACT_MANUAL|LOW_OCCUPANCY),
+       daysBeforeEvent: number (1-30),
+       hoursBeforeThreshold: number (1-72),
+       courtIds: UUID[] | "ALL",
+       channels: enum(PUSH|EMAIL|IN_APP)[],  // at least one required
+       active: boolean
+     }
+     ```
+   - **Create Output (success):** `201 Created` with `{ ruleId: UUID, ...inputFields, createdAt: ISO8601 }`
+   - **Create Output (limit reached):** `422 Unprocessable Entity` with `{ error: "MAX_RULES_REACHED", limit: 10, currentCount: 10 }`
+   - **Update Input:** `PUT /api/settings/reminder-rules/{ruleId}` with same body as create
+   - **Delete Input:** `DELETE /api/settings/reminder-rules/{ruleId}`
+   - **List Input:** `GET /api/settings/reminder-rules`
+   - **List Output:** `200 OK` with `{ rules: [ReminderRule], totalCount: number }`
+2. EACH reminder rule SHALL define: a trigger condition type, a days-before-event threshold, a hours-before-threshold notification lead time, applicable courts (all or specific), notification channels (push, email, in-app), and an active/inactive toggle
+3. THE Platform_Service SHALL support the following trigger condition types:
+   - `UNPAID_BOOKING`: A manual booking (created by the court owner without payment processing) where the court owner expects offline payment but has not manually marked it as "paid." This does NOT apply to customer bookings which always have payment processed through Stripe. Court owners can mark manual bookings as "paid externally" from the booking detail view to clear this trigger.
+   - `PAYMENT_HELD_NOT_CAPTURED`: A customer booking on a manual-confirmation court where the Stripe authorization hold exists but the court owner has not yet confirmed (captured) the payment — useful as an additional reminder beyond the standard pending confirmation notifications
+   - `PENDING_CONFIRMATION`: Booking is awaiting court owner confirmation for longer than X hours
+   - `NO_CONTACT_MANUAL`: Manual booking has no customer contact information for X days
+   - `LOW_OCCUPANCY`: Court has no bookings for the next X days (suggestion to create promotion)
+4. THE Platform_Service SHALL enforce a maximum of 10 active reminder rules per court owner
+5. THE Platform_Service SHALL validate rule parameters: days-before-event must be between 1 and 30, hours-before-threshold must be between 1 and 72, and at least one notification channel must be selected
+
+**Reminder Evaluation and Delivery:**
+6. THE Transaction_Service SHALL run a scheduled job (Quartz, every 30 minutes) that evaluates all active reminder rules against current booking data
+7. WHEN a booking matches a reminder rule's trigger condition AND the current time falls within the notification window (hours-before-threshold before the days-before-event deadline), THE Transaction_Service SHALL generate a reminder notification
+8. THE reminder notification SHALL include: court name, booking date/time, customer name (if available), trigger reason, and suggested actions (contact customer, cancel booking, extend deadline)
+9. THE Transaction_Service SHALL NOT send duplicate reminders for the same booking-rule combination — each rule fires at most once per booking
+10. WHEN a reminder is delivered, THE Transaction_Service SHALL record it in the notification history with the rule ID, booking ID, and delivery timestamp
+
+**Default Rules:**
+11. WHEN a new court owner account is created, THE Platform_Service SHALL create one default reminder rule: trigger=`UNPAID_BOOKING`, days-before-event=3, hours-before-threshold=10, courts=all, channels=push+in-app, active=true
+12. THE court owner SHALL be able to modify or deactivate the default rule
+
+**Dashboard Integration:**
+13. THE admin web application SHALL display a "Needs Attention" widget on the dashboard showing all bookings that currently match active reminder rules
+14. THE "Needs Attention" widget SHALL provide one-click actions: view booking details, contact customer (opens email compose with pre-filled subject and booking context if email is available, or displays phone number with click-to-call link if phone is available), cancel booking, or dismiss the alert
+15. WHEN a court owner dismisses a reminder alert, THE Platform_Service SHALL record the dismissal and not re-trigger the same rule for that booking
+
+### Requirement 15c: Court Owner Audit Trail
+
+**User Story:** As a court owner, I want a complete audit log of all actions performed on my account and courts, so that I can track changes, resolve disputes, and maintain accountability.
+
+#### Acceptance Criteria
+
+1. THE Platform_Service SHALL record an immutable audit log entry for every court owner action: court CRUD, booking confirm/reject/create, pricing changes, policy changes, promo code changes, settings changes, data exports, and session management
+2. EACH audit log entry SHALL contain: timestamp (ISO 8601), actor user ID, actor IP address (stored hashed for privacy), action type, resource type, resource ID, before-state JSON snapshot (null for creates), after-state JSON snapshot (null for deletes), and optional metadata (e.g., rejection reason)
+3. THE Platform_Service SHALL provide court owners with a read-only audit log view in the admin portal, filterable by date range, action type, and resource type
+   - **Input:** `GET /api/audit-log?page=0&size=50&from=2026-01-01&to=2026-01-31&actionType=COURT_CREATED,BOOKING_CONFIRMED&resourceType=COURT,BOOKING&sort=timestamp,desc`
+   - **Output:** `200 OK` with:
+     ```
+     {
+       content: [{
+         id: UUID,
+         timestamp: ISO8601,
+         actorId: UUID,
+         actionType: string,
+         resourceType: string,
+         resourceId: UUID,
+         before: object | null,
+         after: object | null,
+         metadata: object | null
+       }],
+       page: number, size: number, totalElements: number, totalPages: number
+     }
+     ```
+   - Note: `actorIp` is NOT returned to the court owner (stored hashed internally for platform admin use only)
+4. THE audit log SHALL be append-only — court owners and platform admins SHALL NOT be able to edit or delete audit entries
+5. THE Platform_Service SHALL retain audit log entries for a minimum of 2 years
+6. WHEN a court owner views customer personal information (full phone number, full email) in a booking detail view, THE Platform_Service SHALL record an audit entry of type `CUSTOMER_DATA_ACCESSED` with the booking ID
+7. WHEN a court owner exports data (CSV, PDF reports), THE Platform_Service SHALL record an audit entry of type `DATA_EXPORTED` with the export format and date range
+8. THE Platform_Service SHALL allow PLATFORM_ADMIN users to view audit logs for any court owner for dispute resolution and compliance purposes
+9. WHEN a booking dispute is escalated, THE Platform_Service SHALL include the relevant audit log entries as evidence in the dispute record
+
+### Requirement 15d: Court Owner Admin UI Security and Data Protection
+
+**User Story:** As a court owner, I want my customers' personal information to be protected in the admin interface, so that I handle data responsibly and comply with privacy regulations.
+
+#### Acceptance Criteria
+
+**Personal Data Masking:**
+1. WHEN court owners view booking lists or calendar views, THE admin web application SHALL mask customer personal information: phone numbers displayed as `+30 69** *** *45`, emails as `k***@gmail.com`
+2. WHEN a court owner opens a specific booking detail view, THE admin web application SHALL display full customer contact information and THE Platform_Service SHALL log this access in the audit trail
+3. THE admin web application SHALL never display customer payment card details — only last 4 digits and card brand as provided by Stripe
+
+**Concurrent Access Protection:**
+4. WHEN two sessions attempt to modify the same resource (court, booking, pricing), THE Platform_Service SHALL detect the conflict using optimistic locking (version field) and return a 409 Conflict response
+5. WHEN a conflict is detected, THE admin web application SHALL display both versions (current server state and the user's attempted change) and allow the court owner to choose which to keep or merge manually
+
+**Rate Limiting and Abuse Prevention:**
+6. THE Platform_Service SHALL rate-limit court owner API endpoints to prevent abuse: max 100 requests/minute for read operations, max 30 requests/minute for write operations
+7. THE Platform_Service SHALL rate-limit data export requests to max 10 per day per court owner
+8. WHEN rate limits are exceeded, THE admin web application SHALL display a clear message with a countdown timer and SHALL NOT silently drop requests
+
+**Session Security:**
+9. THE admin web application SHALL implement CSRF protection on all state-changing operations
+10. THE admin web application SHALL set secure cookie attributes: `HttpOnly`, `Secure`, `SameSite=Strict`
+11. WHEN a court owner's session expires due to inactivity, THE admin web application SHALL preserve the current URL and redirect back after re-authentication
+
+### Requirement 15e: Court Owner Bulk Operations and Power-User Workflows
+
+**User Story:** As a court owner managing multiple courts, I want to perform bulk operations and use keyboard shortcuts, so that I can manage my business efficiently without repetitive manual work.
+
+#### Acceptance Criteria
+
+**Bulk Court Operations:**
+1. THE admin web application SHALL allow court owners to select multiple courts and apply changes in a single operation: pricing updates, availability window changes, cancellation policy updates, confirmation mode changes, and enable/disable toggles
+2. WHEN a bulk operation is submitted, THE Platform_Service SHALL validate each court independently and return per-court success/failure results
+   - **Input:** `POST /api/courts/bulk-update` with `{ courtIds: UUID[], changes: { basePriceCents?: number, confirmationMode?: enum, waitlistEnabled?: boolean, cancellationPolicy?: object, availabilityTemplate?: object } }`
+   - **Output:** `207 Multi-Status` with `{ results: [{ courtId: UUID, status: "SUCCESS"|"FAILED", error?: { code: string, message: string } }], successCount: number, failureCount: number }`
+3. WHEN a bulk operation partially fails, THE admin web application SHALL display which courts succeeded and which failed with specific error reasons, and allow retry of failed items only
+4. THE admin web application SHALL allow court owners to copy all settings from one court to another (clone court configuration)
+
+**Bulk Booking Operations:**
+5. THE admin web application SHALL allow court owners to select multiple pending bookings and confirm or reject them in a single action
+6. WHEN bulk confirming/rejecting bookings, THE Transaction_Service SHALL process each booking independently and return per-booking results
+   - **Input:** `POST /api/bookings/bulk-action` with `{ bookingIds: UUID[], action: enum(CONFIRM|REJECT), message?: string, reason?: string }`
+   - **Output:** `207 Multi-Status` with `{ results: [{ bookingId: UUID, status: "SUCCESS"|"FAILED", error?: { code: string, message: string } }], successCount: number, failureCount: number }`
+
+**Calendar Integration:**
+7. THE admin web application SHALL allow court owners to export their booking calendar in iCal format for integration with external calendar applications (Google Calendar, Outlook)
+8. THE Transaction_Service SHALL provide an API endpoint that generates the iCal feed from booking data (Transaction Service owns booking records), filtered by the authenticated court owner's courts
+9. THE iCal export SHALL include booking details: court name, time, customer name (if available), and booking status
+
+**Quick Search:**
+10. THE admin web application SHALL provide a global search (`Ctrl+K`) that searches across bookings (by ID, customer name, date), courts (by name), and promo codes (by code)
+   - **Input:** `GET /api/search?q={query}&types=BOOKING,COURT,PROMO_CODE&limit=10`
+   - **Output:** `200 OK` with `{ results: { bookings: [{ bookingId, courtName, date, status }], courts: [{ courtId, name, type }], promoCodes: [{ code, discount, active }] }, totalCount: number }`
+11. THE search results SHALL be grouped by category and support keyboard navigation for selection
 
 ### Requirement 16: System Observability, Monitoring, and End-to-End Traceability
 

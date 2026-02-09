@@ -379,6 +379,170 @@ paths:
                 type: string
                 format: binary
 
+  /api/bookings/{bookingId}/no-show:
+    post:
+      tags: [Bookings]
+      summary: Flag booking as no-show
+      description: |
+        Court owner flags a completed booking as no-show. Must be within 24 hours after
+        the booking's scheduled end time. No automatic financial penalty. COURT_OWNER only.
+      operationId: flagNoShow
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                notes:
+                  type: string
+                  nullable: true
+      responses:
+        '200':
+          description: Booking flagged as no-show
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bookingId:
+                    type: string
+                    format: uuid
+                  noShow:
+                    type: boolean
+                  flaggedAt:
+                    type: string
+                    format: date-time
+        '422':
+          description: No-show window expired or booking not in COMPLETED status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/bookings/{bookingId}/mark-paid:
+    post:
+      tags: [Manual Bookings]
+      summary: Mark manual booking as paid externally
+      description: |
+        Court owner marks a manual booking as paid via offline payment (cash, bank transfer).
+        Clears UNPAID_BOOKING reminder triggers. Only applicable to manual bookings. COURT_OWNER only.
+      operationId: markBookingPaid
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [paymentMethod]
+              properties:
+                paymentMethod:
+                  type: string
+                  description: e.g., "cash", "bank_transfer"
+                notes:
+                  type: string
+                  nullable: true
+                  description: e.g., "Paid at reception"
+      responses:
+        '200':
+          description: Booking marked as paid
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bookingId:
+                    type: string
+                    format: uuid
+                  paymentStatus:
+                    type: string
+                    enum: [PAID_EXTERNALLY]
+                  paidAt:
+                    type: string
+                    format: date-time
+        '422':
+          description: Not a manual booking
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/bookings/bulk-action:
+    post:
+      tags: [Bookings]
+      summary: Bulk confirm or reject pending bookings
+      description: |
+        Court owner confirms or rejects multiple pending bookings in a single action.
+        Each booking is processed independently. Returns per-booking results. COURT_OWNER only.
+      operationId: bulkBookingAction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [bookingIds, action]
+              properties:
+                bookingIds:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+                action:
+                  type: string
+                  enum: [CONFIRM, REJECT]
+                message:
+                  type: string
+                  nullable: true
+                  description: Message sent to customers (for CONFIRM)
+                reason:
+                  type: string
+                  nullable: true
+                  description: Rejection reason sent to customers (for REJECT)
+      responses:
+        '207':
+          description: Multi-status response with per-booking results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BulkActionResult'
+
+  /api/bookings/calendar/ical:
+    get:
+      tags: [Bookings]
+      summary: Export booking calendar as iCal
+      description: |
+        Generates an iCal feed of bookings for the authenticated court owner's courts.
+        For integration with Google Calendar, Outlook, etc. COURT_OWNER only.
+      operationId: exportBookingCalendar
+      parameters:
+        - name: courtId
+          in: query
+          schema:
+            type: string
+            format: uuid
+          description: Filter by specific court (optional, defaults to all owned courts)
+        - name: fromDate
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: toDate
+          in: query
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: iCal calendar file
+          content:
+            text/calendar:
+              schema:
+                type: string
+
 
   # ─── Payments ───────────────────────────────────────────────────────────────
   /api/payments/methods:
@@ -1877,6 +2041,34 @@ components:
           type: string
           format: date-time
           nullable: true
+
+    # ─── Bulk Operations ───────────────────────────────────────────────────
+    BulkActionResult:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              bookingId:
+                type: string
+                format: uuid
+              status:
+                type: string
+                enum: [SUCCESS, FAILED]
+              error:
+                type: object
+                nullable: true
+                properties:
+                  code:
+                    type: string
+                  message:
+                    type: string
+        successCount:
+          type: integer
+        failureCount:
+          type: integer
 
     # ─── Common ─────────────────────────────────────────────────────────────
     ErrorResponse:
