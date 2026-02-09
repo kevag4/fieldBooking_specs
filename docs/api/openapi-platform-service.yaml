@@ -417,6 +417,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CourtSearchResponse'
+        '400':
+          description: |
+            Invalid request parameters. Error codes:
+            - `INVALID_COORDINATES` — latitude/longitude outside valid range
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     post:
       tags: [Courts]
       summary: Register a new court
@@ -2476,6 +2484,18 @@ components:
         type: string
         format: uuid
       description: Support ticket unique identifier
+    IdempotencyKey:
+      name: X-Idempotency-Key
+      in: header
+      required: false
+      schema:
+        type: string
+        format: uuid
+      description: |
+        Client-generated UUID v4 for request deduplication. Required for state-changing
+        operations (court creation, rating submission, support ticket creation). The server
+        will return the same response for duplicate requests with the same idempotency key
+        within 24 hours.
 
   responses:
     BadRequest:
@@ -2504,6 +2524,17 @@ components:
             $ref: '#/components/schemas/ErrorResponse'
     Conflict:
       description: Resource conflict
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    RateLimited:
+      description: Too many requests — rate limit exceeded
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+          description: Number of seconds to wait before retrying
       content:
         application/json:
           schema:
@@ -2929,6 +2960,14 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/CourtSummary'
+        suggestion:
+          type: string
+          nullable: true
+          enum: [EXPAND_RADIUS, REMOVE_FILTERS, TRY_DIFFERENT_DATE]
+          description: |
+            Actionable suggestion when zero results are returned. The mobile app uses this
+            to show guidance like "No courts found within 5km — try expanding your search".
+            Null when results are non-empty.
         totalElements:
           type: integer
         page:
@@ -2966,6 +3005,12 @@ components:
         timezone:
           type: string
           description: Court's timezone (e.g., Europe/Athens)
+        cacheStatus:
+          type: string
+          enum: [HIT, MISS]
+          description: |
+            Indicates whether data was served from Redis cache (HIT) or fell through to
+            PostgreSQL (MISS). When MISS, the mobile app shows a "Data may be slightly delayed" indicator.
         slots:
           type: array
           items:
@@ -3059,10 +3104,23 @@ components:
             $ref: '#/components/schemas/CourtSummary'
         openMatches:
           type: array
+          nullable: true
+          description: Null if open matches data failed to load (see warnings)
           items:
             $ref: '#/components/schemas/OpenMatchSummary'
         weather:
-          $ref: '#/components/schemas/WeatherForecast'
+          nullable: true
+          description: Null if weather data failed to load (see warnings)
+          allOf:
+            - $ref: '#/components/schemas/WeatherForecast'
+        warnings:
+          type: array
+          description: |
+            List of warning codes for partial failures. Empty array when all data loaded successfully.
+            Possible values: WEATHER_UNAVAILABLE, MATCHES_UNAVAILABLE
+          items:
+            type: string
+            enum: [WEATHER_UNAVAILABLE, MATCHES_UNAVAILABLE]
 
     OpenMatchSummary:
       type: object

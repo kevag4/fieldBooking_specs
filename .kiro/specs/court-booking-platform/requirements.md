@@ -407,6 +407,12 @@ graph TD
 - Biometric authentication (fingerprint/face ID) for returning users — unlocks stored refresh token from device secure enclave, exchanges for new access token
 - Terms and conditions acceptance for new users (must accept before proceeding)
 - Role selection during first registration (CUSTOMER or COURT_OWNER)
+- **Error cases:**
+  - OAuth provider unavailable → show error with retry button and alternative provider options; do not block the login screen
+  - Biometric unlock fails (wrong finger, face not recognized) → fall back to OAuth login screen after 3 failed attempts
+  - Refresh token expired or revoked → redirect to OAuth login with "Session expired, please log in again" message
+  - Network unavailable during login → show "No internet connection" banner with retry button; disable login buttons until connectivity is restored
+  - Terms and conditions endpoint unreachable → show cached T&C version with "last updated" date; allow acceptance of cached version
 
 **Step 2: Date & Time Selection**
 - Prominent date picker (calendar view)
@@ -416,6 +422,9 @@ graph TD
 - **"Forecast not yet available"** message for dates beyond 7 days
 - **Indoor/outdoor recommendation** based on weather conditions
 - "Search Courts" button
+- **Error cases:**
+  - Weather API fails or times out (>3s) → show "Weather unavailable" placeholder with a retry icon; do not block the search flow
+  - Date picker loads while offline → allow date/time selection from local state; weather section shows "Connect to see forecast"
 
 **Step 3: Map View with Court Filters**
 - Full-screen map centered on user's location
@@ -443,6 +452,14 @@ graph TD
 - Current location button
 - Search bar for location/address search
 - Settings icon for personalization preferences
+- **Loading & error cases:**
+  - Initial map load → show shimmer/skeleton markers while court data loads; map tiles load independently from court data
+  - Court search API fails → show "Couldn't load courts" banner with retry button; keep map tiles visible
+  - Court search API slow (>2s) → show loading spinner overlay on markers area; cancel and re-request if user pans/zooms during load
+  - Location permission denied → center map on default city (Athens) with prompt to enable location; show "Enable location for better results" banner
+  - Location service unavailable → same as permission denied; allow manual location search via search bar
+  - Poor connectivity (>5s response) → show cached court data from last successful load with "Showing cached results" indicator; auto-refresh when connectivity improves
+  - Map tiles fail to load → show fallback list view of courts sorted by distance with "Map unavailable" message
 
 **Step 4: Court Selection**
 - User taps on court marker
@@ -459,6 +476,10 @@ graph TD
   - Players joined / spots remaining
   - Cost per player
   - "Join Match" button → triggers join request (auto-accept or manual approval)
+- **Error cases:**
+  - Bottom sheet data fails to load → show court name from marker cache with "Tap to retry" on details section
+  - Court no longer exists (deleted between search and tap) → show "This court is no longer available" message and remove marker from map
+  - Open match already full (race condition) → show "This match is now full" with option to join waitlist or find similar matches
 
 **Step 5: Court Details**
 - Full-screen court details:
@@ -479,6 +500,12 @@ graph TD
   - **Waitlist indicator for fully booked slots** (if waitlist enabled by court owner)
   - **Cancellation policy summary** (e.g., "Full refund if cancelled 24h+ before")
   - "Book Now" button (or "Join Waitlist" if fully booked)
+- **Loading & error cases:**
+  - Court detail API slow → show skeleton layout with court name/type from preview cache; load images, ratings, and slots progressively
+  - Court images fail to load → show placeholder image with court type icon; retry image load on scroll-into-view
+  - Availability slots fail to load → show "Couldn't load availability" with retry button; keep rest of court details visible
+  - Slot became unavailable between view and tap (race condition) → show "This slot was just booked" toast and refresh availability
+  - Ratings/reviews fail to load → show "Reviews unavailable" placeholder; do not block booking flow
 
 **Step 6: Booking Confirmation**
 - Booking summary:
@@ -495,6 +522,11 @@ graph TD
   - Cancellation policy details
   - **Confirmation mode indicator** ("Instant confirmation" or "Requires owner approval")
 - "Proceed to Payment" button
+- **Error cases:**
+  - Promo code validation fails (network error) → show "Couldn't validate code, try again" with retry; do not apply discount
+  - Promo code invalid/expired → show specific reason: "Code expired", "Code already used", "Not valid for this court type"
+  - Price changed between court detail view and confirmation (dynamic pricing update) → show "Price has been updated" alert with old and new price; require user to acknowledge before proceeding
+  - Slot became unavailable during confirmation screen → show "This slot is no longer available" with option to pick another time or join waitlist
 
 **Step 7: Payment**
 - Stripe payment interface
@@ -502,6 +534,14 @@ graph TD
 - Add new card option
 - Apple Pay / Google Pay support
 - "Confirm and Pay" button
+- **Error cases:**
+  - Card declined → show Stripe's decline reason (insufficient funds, expired card, etc.) with "Try another payment method" option
+  - 3D Secure authentication fails → show "Authentication failed" with retry option; do not create booking
+  - Network timeout during payment (>10s) → show "Payment is being processed, please wait..." spinner; do NOT allow duplicate submission; check payment status on reconnect
+  - Stripe SDK fails to initialize → show "Payment system temporarily unavailable, please try again in a few minutes" with retry
+  - Apple Pay / Google Pay not available on device → hide those options; show card entry only
+  - Saved payment method expired → show "Your saved card has expired" with option to update or use a different method
+  - Booking slot taken during payment (race condition) → cancel payment intent, show "This slot was just booked by another user" with option to pick another time
 
 **Step 8: Booking Result**
 - **If instant confirmation (court configured for instant):**
@@ -520,6 +560,17 @@ graph TD
   - Push notification when confirmed/rejected
   - If timeout expires: automatic cancellation + full refund + notification
 
+**Step 8a: Booking Error Recovery**
+- **If payment succeeded but booking creation failed (server error after payment):**
+  - Show "Your payment was received but we encountered an issue creating your booking. Our team has been notified and will resolve this within 1 hour. Your payment is safe."
+  - Display booking reference (from payment intent) for support reference
+  - Transaction Service reconciliation job (every 15 minutes) detects orphaned payments and auto-creates bookings or initiates refunds
+  - Push notification sent when booking is created or refund is issued
+- **If app crashes or closes during payment flow:**
+  - On next app launch, check for pending/incomplete bookings via `GET /api/bookings?status=PENDING_PAYMENT`
+  - If found: show "You have an incomplete booking" banner with resume or cancel options
+  - If payment was captured but booking not confirmed: reconciliation job handles it (see above)
+
 **Step 9: Post-Booking**
 - Navigate to "My Bookings" tab
 - View booking details (including recurring booking instances)
@@ -537,6 +588,54 @@ graph TD
     - Submit support ticket (with auto-attached booking context)
     - View existing tickets and conversation thread
     - Attach app diagnostic logs for technical issues
+
+### Mobile App Error Handling and Connectivity Principles
+
+The mobile app follows consistent error handling patterns across all screens:
+
+**Network Error Handling:**
+- **Transient failures (timeout, 5xx):** Show inline error banner with "Retry" button. Auto-retry GET requests once after 2 seconds. Never silently swallow errors.
+- **Client errors (4xx):** Show specific, actionable error message from the API `message` field (localized). Do not auto-retry.
+- **No internet connection:** Show persistent "No connection" banner at top of screen. Disable actions that require network (booking, payment, rating). Enable read-only browsing of cached data.
+- **Connection restored:** Automatically dismiss "No connection" banner, refresh current screen data, and resume any queued operations (favorite toggles, preference saves).
+
+**Latency Tolerance and Loading States:**
+- **< 300ms:** No loading indicator shown (perceived as instant).
+- **300ms – 2s:** Show subtle loading indicator (spinner on button, shimmer on content area). Content area shows skeleton placeholders matching the expected layout.
+- **2s – 5s:** Show prominent loading overlay with "Loading..." text. For map view, show "Searching for courts..." message.
+- **> 5s:** Show "This is taking longer than usual" message with cancel/retry option. For payment flows, show "Please wait, do not close the app" with progress indicator.
+- **> 10s:** Auto-cancel the request (except payment flows). Show "Something went wrong" with retry button and "Contact Support" link.
+
+**Offline Behavior:**
+- **Cached data:** The app caches the last successful response for: court search results (map markers), court detail pages, user profile, user preferences, favorite courts list, and booking history. Cache is stored locally using SQLite/Hive with a 24-hour TTL.
+- **Offline browsing:** Users can browse cached court details, view their booking history, and access favorite courts while offline. Stale data is indicated with "Last updated X minutes ago" label.
+- **Offline-blocked actions:** Booking creation, payment, cancellation, rating submission, waitlist join, and match join require network connectivity. These buttons show a disabled state with "Requires internet" tooltip when offline.
+- **Queued actions:** Favorite toggle and preference changes are queued locally and synced when connectivity returns. Queued actions show a "Pending sync" indicator.
+- **WebSocket disconnection:** When the WebSocket connection drops, the app shows a subtle "Live updates paused" indicator. Availability data may be stale. On reconnect, the app fetches a full availability refresh for any court currently being viewed.
+
+**Optimistic UI Updates:**
+- **Favorite toggle:** Update UI immediately on tap; revert if server request fails with error toast.
+- **Preference changes:** Apply locally immediately; sync to server in background; revert on failure.
+- **Booking cancellation:** Show "Cancelling..." state immediately; confirm or revert based on server response.
+
+**Payment Flow Resilience:**
+- **Idempotency:** All booking creation requests include a client-generated idempotency key (UUID v4) to prevent duplicate bookings on retry.
+- **Double-tap prevention:** "Confirm and Pay" button is disabled immediately on first tap and shows a spinner. Re-enabled only on explicit failure.
+- **Background/kill during payment:** On next app launch, the app checks for in-flight payments and resolves them (see Step 8a).
+
+**Error Message Localization:**
+- All error messages from the API are returned in the user's preferred language (Greek or English) via the `Accept-Language` header.
+- Client-side error messages (network errors, timeouts) are also localized.
+- Error messages use friendly, non-technical language: "We couldn't complete your booking" instead of "HTTP 500 Internal Server Error".
+
+**Rate Limiting (Client-Side):**
+- The app respects `429 Too Many Requests` responses by reading the `Retry-After` header and disabling the action with a countdown timer.
+- The app implements client-side request throttling: map pan/zoom debounces court search requests to max 1 request per 500ms; availability refresh is throttled to max 1 request per 5 seconds per court.
+
+**Session Expiry:**
+- When a `401 Unauthorized` response is received, the app attempts a silent token refresh using the stored refresh token.
+- If the refresh also fails (expired/revoked), the app redirects to the login screen with "Your session has expired, please log in again" message.
+- The app preserves the user's current navigation state (screen + scroll position) and restores it after successful re-authentication.
 
 ## Court Owner Admin Journey
 
@@ -948,6 +1047,16 @@ Every action performed by a court owner in the admin portal is recorded in an im
 - **Stripe_Billing**: Stripe's subscription management product used for court owner subscription billing (separate from customer booking payments)
 - **Subscription_Grace_Period**: 7-day window after a failed subscription payment during which the court owner retains full access before being restricted to expired status
 - **Euro_Cents**: Integer representation of EUR amounts (e.g., €25.50 = 2550) used throughout the API, database, and Stripe calls to avoid floating-point rounding issues
+- **Idempotency_Key**: Client-generated UUID included with state-changing API requests to prevent duplicate operations on retry (e.g., duplicate bookings, duplicate payments)
+- **Optimistic_UI_Update**: UI pattern where the interface updates immediately on user action before server confirmation, reverting if the server request fails
+- **Skeleton_UI**: Placeholder layout (shimmer effect) shown while content is loading, matching the expected content structure to reduce perceived latency
+- **Exponential_Backoff**: Retry strategy where wait time doubles between attempts (e.g., 1s, 2s, 4s, 8s) to avoid overwhelming a recovering server
+- **Thundering_Herd**: Problem where many clients reconnect simultaneously after an outage; mitigated by adding random jitter to reconnection delays
+- **Offline_Queue**: Local queue of pending user actions (favorites, preferences) that are synced to the server when connectivity is restored
+- **Cache_TTL**: Time-to-live for locally cached data; after expiration, data is considered stale and refreshed on next access
+- **Silent_Token_Refresh**: Transparent background refresh of an expired access token using the stored refresh token, without interrupting the user's current action
+- **Request_Debounce**: Client-side technique that delays sending a request until user input stabilizes (e.g., waiting 500ms after last map pan before searching)
+- **Partial_Failure**: API response where some parts succeed and others fail (e.g., `207 Multi-Status` for recurring bookings with some date conflicts)
 
 ## Requirements
 
@@ -1146,6 +1255,9 @@ Internal HTTP calls between Platform Service and Transaction Service (within the
 3. WHEN map integration is requested, THE Platform_Service SHALL provide court coordinates for map rendering
 4. WHERE search filters are applied, THE Platform_Service SHALL combine geospatial and attribute-based filtering
 5. WHEN search radius is specified, THE Platform_Service SHALL limit results to courts within the specified distance
+6. WHEN the court search API returns zero results for the user's location and filters, THE Platform_Service SHALL return an empty results array with a `suggestion` field: `{ courts: [], suggestion: "EXPAND_RADIUS" | "REMOVE_FILTERS" | "TRY_DIFFERENT_DATE" }` so the mobile app can show actionable guidance (e.g., "No courts found within 5km — try expanding your search")
+7. WHEN the aggregated map endpoint (`GET /api/courts/map`) partially fails (e.g., courts load but weather or open matches fail), THE Platform_Service SHALL return the successful data with `null` for failed sections and include a `warnings` array: `{ courts: [...], openMatches: null, weather: null, warnings: ["WEATHER_UNAVAILABLE", "MATCHES_UNAVAILABLE"] }` so the mobile app can render partial results with appropriate placeholders
+8. WHEN the court search request includes invalid coordinates (outside valid lat/lng range), THE Platform_Service SHALL return `400 Bad Request` with `{ error: "INVALID_COORDINATES", message: "Latitude must be between -90 and 90, longitude between -180 and 180" }`
 
 ### Requirement 4: Customer Search and Booking User Journey
 
@@ -1219,6 +1331,10 @@ Internal HTTP calls between Platform Service and Transaction Service (within the
 4. WHILE a booking is in progress, THE Transaction_Service SHALL mark the time slot as temporarily unavailable and broadcast the change
 5. WHEN a booking is completed or cancelled, THE Transaction_Service SHALL immediately update availability status and broadcast via WebSocket
 6. WHEN a booking event changes availability, THE Transaction_Service SHALL publish a Kafka event to Platform_Service for cache invalidation
+7. WHEN the WebSocket connection drops for a connected client, THE Transaction_Service SHALL clean up the subscription after 2 missed heartbeats (60 seconds) and free server resources
+8. WHEN a client reconnects after a WebSocket disconnection, THE Transaction_Service SHALL send a full availability snapshot for the court(s) the client was subscribed to, rather than incremental updates, to ensure consistency
+9. WHEN the availability cache (Redis) is stale or unavailable, THE Platform_Service SHALL fall through to a direct PostgreSQL query and include a `cacheStatus: "MISS"` field in the response so the mobile app can show a "Data may be slightly delayed" indicator
+10. WHEN a temporarily held slot (booking in progress) is not confirmed within 5 minutes, THE Transaction_Service SHALL release the hold and broadcast the slot as available again
 
 ### Requirement 8: Atomic Booking Creation with Conflict Prevention
 
@@ -1229,10 +1345,13 @@ Internal HTTP calls between Platform Service and Transaction Service (within the
 1. WHEN a booking request is received, THE Transaction_Service SHALL acquire an optimistic lock on the requested time slot
 2. WHEN payment authorization succeeds, THE Transaction_Service SHALL create the booking record atomically with payment confirmation
 3. IF a booking conflict is detected, THEN THE Transaction_Service SHALL reject the request and return a conflict error
+   - **Output:** `409 Conflict` with `{ error: "TIME_SLOT_UNAVAILABLE", conflictingSlot: { date: ISO8601-date, startTime: HH:mm }, alternativeSlots: [{ startTime: HH:mm, endTime: HH:mm, price: number }] }` — the response includes up to 3 alternative available slots on the same date to help the customer rebook quickly
 4. WHEN booking creation completes, THE Transaction_Service SHALL release the lock and publish booking events asynchronously
 5. WHILE processing a booking, THE Transaction_Service SHALL prevent other bookings for the same time slot
 6. THE Transaction_Service SHALL enforce a configurable maximum advance booking window (default: 30 days)
+   - **Output (exceeded):** `422 Unprocessable Entity` with `{ error: "BOOKING_WINDOW_EXCEEDED", maxAdvanceDays: 30, requestedDate: ISO8601-date }`
 7. THE Transaction_Service SHALL enforce a configurable minimum booking notice period (default: 1 hour before start time)
+   - **Output (too late):** `422 Unprocessable Entity` with `{ error: "MINIMUM_NOTICE_NOT_MET", minimumNoticeHours: 1, bookingStartTime: ISO8601 }`
 8. THE Transaction_Service SHALL support recurring bookings allowing customers to reserve the same court at the same time on a weekly basis for a configurable duration (default: 4 weeks, maximum: 12 weeks)
 9. WHEN a recurring booking is created, THE Transaction_Service SHALL validate availability for all requested dates and create individual booking records, each charged separately at the time of creation
 10. WHEN a recurring booking conflicts with an existing booking on some dates, THE Transaction_Service SHALL inform the customer of the conflicting dates and allow partial recurring booking creation for available dates only
@@ -1428,8 +1547,14 @@ For split-payment bookings, the same calculation applies to the total booking am
 #### Acceptance Criteria
 
 1. WHEN a customer requests booking modification, THE Transaction_Service SHALL validate new time slot availability before processing the change
+   - **Output (slot unavailable):** `409 Conflict` with `{ error: "NEW_SLOT_UNAVAILABLE", alternativeSlots: [...] }`
 2. WHEN a booking modification is approved, THE Transaction_Service SHALL update the booking atomically and adjust payment if pricing differs — creating a new PaymentIntent for additional charges or issuing a partial refund for price decreases
+   - **Output (price increase):** `200 OK` with `{ bookingId: UUID, status: "MODIFIED", priceDifferenceCents: number, additionalPaymentRequired: true, paymentIntentClientSecret: string }`
+   - **Output (price decrease):** `200 OK` with `{ bookingId: UUID, status: "MODIFIED", refundAmountCents: number, refundStatus: "PROCESSING" }`
 3. WHEN a customer cancels a booking, THE Transaction_Service SHALL apply the court owner's cancellation policy to determine refund amount using the refund calculation model above
+   - **Output:** `200 OK` with `{ bookingId: UUID, status: "CANCELLED", refundAmountCents: number, refundPercentage: number, policyTierApplied: { thresholdHours: number, refundPercentage: number }, refundStatus: "PROCESSING"|"NONE" }`
+   - **Output (already cancelled):** `422 Unprocessable Entity` with `{ error: "BOOKING_ALREADY_CANCELLED" }`
+   - **Output (booking completed):** `422 Unprocessable Entity` with `{ error: "BOOKING_ALREADY_COMPLETED", completedAt: ISO8601 }`
 4. WHEN a court owner cancels a confirmed booking, THE Transaction_Service SHALL issue a full refund of the court owner's share to the customer (platform commission remains non-refundable) and reverse the Stripe Connect transfer
 5. WHEN a cancellation is processed, THE Transaction_Service SHALL initiate the refund through Stripe's Refund API, update booking status to CANCELLED, and record the refund amount, reason, and timestamp in the payments table
 6. WHEN a refund is initiated, THE Transaction_Service SHALL track refund status via `charge.refunded` webhook and notify the customer when the refund is completed (typically 5-10 business days)
@@ -2146,6 +2271,10 @@ For split-payment bookings, the same calculation applies to the total booking am
 4. WHEN open matches are displayed, THE Platform_Service SHALL show the match creator's skill level and preferred skill range for joining players
 5. WHEN a customer searches for courts, THE Platform_Service SHALL also display nearby open matches that match the customer's skill level and sport preference
 6. WHEN a customer requests to join an open match, THE Transaction_Service SHALL notify the match creator for approval (unless auto-accept is enabled)
+   - **Output (request sent):** `200 OK` with `{ joinRequestId: UUID, status: "PENDING_APPROVAL"|"AUTO_ACCEPTED", matchId: UUID }`
+   - **Output (match full):** `409 Conflict` with `{ error: "MATCH_FULL", currentPlayers: number, maxPlayers: number }`
+   - **Output (skill mismatch with auto-accept):** `422 Unprocessable Entity` with `{ error: "SKILL_LEVEL_OUTSIDE_RANGE", playerSkill: number, requiredRange: { min: number, max: number } }`
+   - **Output (already joined):** `409 Conflict` with `{ error: "ALREADY_IN_MATCH" }`
 7. THE Transaction_Service SHALL allow match creators to configure an "auto-accept" mode that automatically approves join requests from players within a specified skill range
 8. WHEN a join request is sent and auto-accept is not enabled, THE Transaction_Service SHALL enforce a configurable response timeout (default: 4 hours) after which the request is automatically declined
 9. WHEN a join request is approved (manually or via auto-accept), THE Transaction_Service SHALL add the player to the booking and initiate their share of the payment
@@ -2196,6 +2325,11 @@ This avoids complex authorization hold management and keeps the booking confirme
 1. WHEN a time slot is fully booked, THE Transaction_Service SHALL display a "Join Waitlist" option instead of "Book Now" (unless the court owner has disabled waitlists for that court)
 2. THE Platform_Service SHALL allow court owners to enable or disable waitlist functionality per court
 3. WHEN a customer joins a waitlist, THE Transaction_Service SHALL record their position and notify them of their queue position
+   - **Output (joined):** `201 Created` with `{ waitlistEntryId: UUID, position: number, estimatedWaitTime: string|null, courtId: UUID, date: ISO8601-date, startTime: HH:mm }`
+   - **Output (waitlist disabled):** `422 Unprocessable Entity` with `{ error: "WAITLIST_DISABLED_FOR_COURT" }`
+   - **Output (already on waitlist):** `409 Conflict` with `{ error: "ALREADY_ON_WAITLIST", existingEntryId: UUID, position: number }`
+   - **Output (max entries reached):** `422 Unprocessable Entity` with `{ error: "MAX_WAITLIST_ENTRIES_REACHED", limit: 5, currentCount: 5 }`
+   - **Output (slot now available):** `200 OK` with `{ message: "SLOT_NOW_AVAILABLE", redirectToBooking: true }` — race condition where slot freed between page load and waitlist join
 4. WHEN a booking is cancelled by a customer for a waitlisted time slot, THE Transaction_Service SHALL automatically notify the first person on the waitlist
 5. WHEN a booking is cancelled by a court owner for a waitlisted time slot, THE Transaction_Service SHALL allow the court owner to choose whether to release the slot to the waitlist or keep it blocked
 6. THE Transaction_Service SHALL process waitlist entries strictly in FIFO (first-in, first-out) order with no priority overrides
@@ -2351,3 +2485,109 @@ The support hub provides a tiered approach — self-service first, then escalati
 29. THE mobile application and admin web portal SHALL include a searchable FAQ section with articles organized by category (Booking, Payments, Account, Technical)
 30. THE FAQ content SHALL be available in both Greek and English, consistent with the app's language setting
 31. THE FAQ articles SHALL be bundled as static content with the application and updated via app releases
+
+### Requirement 31: Mobile App Client Resilience, Offline Behavior, and Error Handling
+
+**User Story:** As a customer using the mobile app, I want the app to handle errors gracefully, work partially offline, and remain responsive under poor network conditions, so that I have a reliable experience regardless of connectivity.
+
+#### API Error Response Contract
+
+All backend API errors follow a consistent response format that the mobile app relies on for user-facing error messages:
+
+```json
+{
+  "error": "ERROR_CODE",
+  "message": "Human-readable message in user's language",
+  "details": { "field": "additional context" },
+  "timestamp": "2026-02-09T10:30:00Z",
+  "correlationId": "trace-id-for-support"
+}
+```
+
+The mobile app SHALL use the `message` field for user-facing display and the `error` code for programmatic handling (retry logic, navigation decisions). The `correlationId` SHALL be included in support ticket submissions for debugging.
+
+#### HTTP Status Code Handling
+
+| Status Code | Mobile App Behavior |
+|-------------|-------------------|
+| `200-201` | Success — update UI, dismiss loading state |
+| `207` | Partial success (recurring bookings, bulk) — show per-item results with success/failure breakdown |
+| `400` | Validation error — show field-level errors from `details`, highlight invalid fields |
+| `401` | Unauthorized — attempt silent token refresh; if refresh fails, redirect to login |
+| `403` | Forbidden — show "You don't have permission" message; do not retry |
+| `404` | Not found — show "This item is no longer available" and navigate back or remove from cache |
+| `409` | Conflict — show specific conflict message (slot taken, duplicate booking); refresh availability |
+| `422` | Unprocessable — show business rule violation message (e.g., "Booking window exceeded", "Authorization expired") |
+| `429` | Rate limited — read `Retry-After` header, show countdown timer, disable action until timer expires |
+| `500` | Server error — show "Something went wrong" with retry button; auto-retry once after 3 seconds for GET requests |
+| `502-504` | Gateway/timeout — show "Server temporarily unavailable" with retry; implement exponential backoff (2s, 4s, 8s, max 30s) |
+
+#### Acceptance Criteria
+
+**Network Resilience:**
+1. WHEN the mobile app detects no internet connectivity (via platform connectivity APIs), THE app SHALL show a persistent "No connection" banner at the top of every screen and disable all network-dependent actions (booking, payment, rating, waitlist join)
+2. WHEN internet connectivity is restored, THE app SHALL automatically dismiss the "No connection" banner, refresh the current screen's data, and process any queued offline actions (favorite toggles, preference saves)
+3. WHEN an API request fails with a transient error (5xx, timeout, network error), THE app SHALL auto-retry GET requests once after 2 seconds with exponential backoff; for non-GET requests, show an error with a manual "Retry" button
+4. WHEN an API request exceeds the latency threshold (5 seconds for standard requests, 10 seconds for payment requests), THE app SHALL show a "This is taking longer than usual" message with a cancel option (except during active payment processing)
+5. THE app SHALL implement request deduplication using client-generated idempotency keys (UUID v4) for all state-changing operations (booking creation, payment, cancellation, rating submission) to prevent duplicate actions on retry
+6. THE app SHALL debounce map interaction requests (pan, zoom) to a maximum of 1 court search request per 500ms and throttle availability refresh to 1 request per 5 seconds per court
+
+**Offline Data Caching:**
+7. THE app SHALL cache the following data locally (SQLite or Hive) with a 24-hour TTL: court search results (last 3 searches), court detail pages (last 10 viewed), user profile, user preferences, favorite courts list, booking history (last 50 bookings), and weather forecasts (last fetched)
+8. WHEN the app is offline, THE app SHALL allow browsing of cached court details, viewing booking history, accessing favorite courts, and reading FAQ articles
+9. WHEN displaying cached data, THE app SHALL show a "Last updated X minutes ago" label to indicate data freshness
+10. WHEN cached data is older than 24 hours, THE app SHALL show a "Data may be outdated" warning and prioritize refresh on next connectivity
+11. THE app SHALL NOT allow booking creation, payment processing, cancellation, rating submission, waitlist join, or match join while offline — these buttons SHALL show a disabled state with "Requires internet" tooltip
+
+**Loading States and Skeleton UI:**
+12. WHEN an API response takes less than 300ms, THE app SHALL NOT show any loading indicator (perceived as instant)
+13. WHEN an API response takes between 300ms and 2 seconds, THE app SHALL show skeleton placeholders matching the expected content layout (shimmer effect for cards, text lines, and images)
+14. WHEN an API response takes between 2 and 5 seconds, THE app SHALL show a prominent loading overlay with contextual message (e.g., "Searching for courts...", "Loading availability...")
+15. WHEN an API response takes longer than 5 seconds, THE app SHALL show "This is taking longer than usual" with cancel/retry options
+16. WHEN an API response takes longer than 10 seconds (non-payment), THE app SHALL auto-cancel the request and show "Something went wrong" with retry and "Contact Support" options
+
+**Optimistic UI and Queued Actions:**
+17. WHEN a user toggles a court as favorite, THE app SHALL update the UI immediately (optimistic update) and sync to the server in the background; if the server request fails, THE app SHALL revert the UI and show an error toast
+18. WHEN a user updates preferences (language, search distance, notification settings), THE app SHALL apply changes locally immediately and queue the server sync; if sync fails, THE app SHALL retry on next app launch
+19. THE app SHALL maintain a local queue of pending sync operations (max 50 items) and process them in order when connectivity is available
+
+**WebSocket Connection Resilience:**
+20. WHEN the WebSocket connection to Transaction Service drops, THE app SHALL show a subtle "Live updates paused" indicator on screens that depend on real-time data (availability view, booking status, open match details)
+21. WHEN the WebSocket connection drops, THE app SHALL attempt automatic reconnection with exponential backoff (1s, 2s, 4s, 8s, max 30s) and jitter (±500ms random offset to avoid thundering herd)
+22. WHEN the WebSocket connection is re-established, THE app SHALL fetch a full availability refresh for any court currently being viewed and dismiss the "Live updates paused" indicator
+23. WHEN the WebSocket connection has been down for more than 60 seconds, THE app SHALL fall back to polling availability every 10 seconds for the currently viewed court (if any)
+24. WHEN the app transitions from background to foreground, THE app SHALL re-establish the WebSocket connection if it was dropped and refresh the current screen's real-time data
+
+**Payment Flow Resilience:**
+25. WHEN the "Confirm and Pay" button is tapped, THE app SHALL immediately disable the button and show a spinner to prevent double-tap/double-submission
+26. THE app SHALL include a client-generated idempotency key with every booking creation request so that retries do not create duplicate bookings
+27. WHEN the app is killed or crashes during an active payment flow, THE app SHALL check for incomplete bookings on next launch via `GET /api/bookings?status=PENDING_PAYMENT` and show a "You have an incomplete booking" banner with resume or cancel options
+28. WHEN a payment request times out (>10s) but the payment may have been processed server-side, THE app SHALL show "Your payment is being processed — please do not retry" and poll the booking status every 5 seconds for up to 60 seconds before showing a "Contact Support" option with the payment reference
+29. WHEN a Stripe 3D Secure authentication is required, THE app SHALL handle the redirect flow and wait up to 5 minutes for the user to complete authentication before timing out
+30. WHEN a payment fails with a retryable error (network timeout, Stripe temporary error), THE app SHALL allow one manual retry with the same idempotency key; if the retry also fails, show "Payment could not be processed" with "Try different payment method" and "Contact Support" options
+
+**Booking Conflict Handling:**
+31. WHEN a booking creation returns `409 Conflict` (slot taken by another user), THE app SHALL show "This time slot was just booked by someone else" with options: "Pick another time" (refreshes availability) or "Join Waitlist" (if waitlist is enabled)
+32. WHEN a recurring booking creation returns `207 Multi-Status` (partial conflicts), THE app SHALL show a clear breakdown: "X of Y dates booked successfully" with a list of conflicting dates and reasons, and a "Confirm partial booking" or "Cancel all" option
+33. WHEN availability data shown on screen becomes stale (WebSocket disconnected, >30 seconds since last update), THE app SHALL show a subtle "Availability may have changed" indicator on time slots and refresh availability when the user taps "Book Now"
+
+**Session Management:**
+34. WHEN a `401 Unauthorized` response is received on any API call, THE app SHALL attempt a silent token refresh using the stored refresh token without interrupting the user
+35. WHEN the silent token refresh succeeds, THE app SHALL retry the original failed request transparently
+36. WHEN the silent token refresh fails (refresh token expired, revoked, or replay detected), THE app SHALL redirect to the login screen with "Your session has expired, please log in again" and preserve the current navigation state for restoration after re-login
+37. THE app SHALL proactively refresh the access token when it is within 60 seconds of expiration, to avoid mid-request token expiry
+
+**Partial Failure Handling:**
+38. WHEN the aggregated map endpoint (`GET /api/courts/map`) returns partial data (e.g., courts loaded but weather failed), THE app SHALL display the available data and show appropriate placeholders for failed sections (e.g., "Weather unavailable" banner) without blocking the entire screen
+39. WHEN court detail loading fails for individual sections (images, ratings, availability), THE app SHALL load sections independently and show per-section error states with retry options, keeping successfully loaded sections visible
+40. WHEN a split payment invitation fails to send to some co-players, THE app SHALL show per-player send status and allow retry for failed invitations only
+
+**Background App Behavior:**
+41. WHEN the app is in the background for more than 5 minutes, THE app SHALL refresh the access token and current screen data when returning to foreground
+42. WHEN the app receives a push notification about a booking status change while in the background, THE app SHALL update the local booking cache so the data is fresh when the user opens the app
+43. WHEN the app is force-killed and relaunched, THE app SHALL restore the last active screen (if the user was authenticated) and refresh its data
+
+**Client-Side Validation:**
+44. THE app SHALL perform client-side validation before sending API requests: date/time must be in the future, booking duration must match court configuration, number of people must not exceed court capacity, promo code format must be alphanumeric (3-20 chars)
+45. WHEN client-side validation fails, THE app SHALL show inline field-level error messages without making an API call
+46. THE app SHALL NOT rely solely on client-side validation — all validations are also enforced server-side as the authoritative check
