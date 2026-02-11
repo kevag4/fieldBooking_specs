@@ -211,10 +211,59 @@ Manual date/time blocks (maintenance, holidays, private events).
 | start_time | TIME | | NULL = blocks entire day |
 | end_time | TIME | | |
 | reason | VARCHAR(255) | | |
+| source | VARCHAR(20) | NOT NULL DEFAULT 'MANUAL', CHECK IN ('MANUAL','HOLIDAY_NATIONAL','HOLIDAY_CUSTOM') | Origin of the override |
+| holiday_template_id | UUID | FK → holiday_templates(id) ON DELETE SET NULL | Reference to holiday that created this override |
 | created_at | TIMESTAMPTZ | NOT NULL DEFAULT NOW() | |
 
 **Indexes:**
 - `idx_availability_overrides_court_date` — on `(court_id, date)`
+- `idx_availability_overrides_source` — on `source` WHERE `source != 'MANUAL'`
+- `idx_availability_overrides_holiday` — on `holiday_template_id` WHERE `holiday_template_id IS NOT NULL`
+
+---
+
+### `holiday_templates`
+
+Pre-defined national holidays and court owner custom holidays (Req 37).
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | UUID | PK, DEFAULT gen_random_uuid() | |
+| owner_id | UUID | FK → users(id) ON DELETE CASCADE | NULL for national holidays |
+| name_el | VARCHAR(255) | NOT NULL | Greek name |
+| name_en | VARCHAR(255) | | English name |
+| date_pattern | VARCHAR(50) | NOT NULL | e.g., 'FIXED:12-25', 'EASTER_OFFSET:-2', 'FIXED:01-01' |
+| is_national | BOOLEAN | NOT NULL DEFAULT FALSE | TRUE for pre-defined national holidays |
+| is_active | BOOLEAN | NOT NULL DEFAULT TRUE | |
+| created_at | TIMESTAMPTZ | NOT NULL DEFAULT NOW() | |
+| updated_at | TIMESTAMPTZ | NOT NULL DEFAULT NOW() | |
+
+**Indexes:**
+- `idx_holiday_templates_owner` — on `owner_id` WHERE `owner_id IS NOT NULL`
+- `idx_holiday_templates_national` — on `is_national` WHERE `is_national = TRUE`
+- `uq_holiday_templates_owner_name` — UNIQUE on `(owner_id, name_el)` WHERE `owner_id IS NOT NULL`
+
+**Date Pattern Format:**
+- `FIXED:MM-DD` — Fixed date every year (e.g., `FIXED:12-25` for Christmas)
+- `EASTER_OFFSET:N` — N days from Orthodox Easter (e.g., `EASTER_OFFSET:0` for Easter Sunday, `EASTER_OFFSET:-2` for Good Friday, `EASTER_OFFSET:50` for Whit Monday)
+
+---
+
+### `court_holiday_subscriptions`
+
+Links courts to holiday templates for automatic annual application (Req 37).
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | UUID | PK, DEFAULT gen_random_uuid() | |
+| court_id | UUID | NOT NULL, FK → courts(id) ON DELETE CASCADE | |
+| holiday_template_id | UUID | NOT NULL, FK → holiday_templates(id) ON DELETE CASCADE | |
+| auto_renew | BOOLEAN | NOT NULL DEFAULT TRUE | Generate overrides for future years automatically |
+| created_at | TIMESTAMPTZ | NOT NULL DEFAULT NOW() | |
+
+**Indexes:**
+- `uq_court_holiday_subscription` — UNIQUE on `(court_id, holiday_template_id)`
+- `idx_court_holiday_subscriptions_court` — on `court_id`
 
 ---
 

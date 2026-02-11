@@ -50,7 +50,7 @@ Dependencies flow downward — later phases build on earlier ones.
 
 **Target repos:** `court-booking-platform-service`
 
-**Requirements covered:** Req 2, Req 3, Req 4, Req 5, Req 6, Req 7 (availability caching)
+**Requirements covered:** Req 2, Req 3, Req 4, Req 5, Req 6, Req 7 (availability caching), Req 37 (holiday calendar)
 
 **Scope:**
 - Court CRUD (create, update, delete with booking conflict checks)
@@ -58,6 +58,11 @@ Dependencies flow downward — later phases build on earlier ones.
 - Court types: Tennis, Padel, Basketball, Football 5x5
 - Indoor/Outdoor classification
 - Availability windows (recurring weekly schedule) and overrides (maintenance, holidays)
+- Holiday calendar management (Req 37):
+  - Pre-defined Greek national holidays with Orthodox Easter calculation
+  - Custom holidays with optional annual recurrence
+  - Bulk holiday application across multiple courts
+  - Holiday calendar view with conflict detection
 - Geospatial search with PostGIS (radius search, map bounds, filtering by type)
 - Aggregated map endpoint (`GET /api/courts/map`)
 - Court owner verification workflow (submit documents, admin review, approve/reject)
@@ -68,11 +73,12 @@ Dependencies flow downward — later phases build on earlier ones.
 - Court owner default settings
 - Kafka publishing: `court-update-events` topic (COURT_UPDATED, PRICING_UPDATED, AVAILABILITY_UPDATED, etc.)
 
-**Deliverable:** Courts can be created, discovered on a map, and have availability/pricing configured. Weather integration working.
+**Deliverable:** Courts can be created, discovered on a map, and have availability/pricing configured. Weather integration working. Holiday calendar operational.
 
 ---
 
 ## Phase 4 — Booking & Payments (Transaction Service)
+
 
 **Target repos:** `court-booking-transaction-service`
 

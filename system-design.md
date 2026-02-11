@@ -102,6 +102,7 @@ Target users: Court Owners (COURT_OWNER role), Support Agents (SUPPORT_AGENT rol
 |------------|----------------|----------|
 | OAuth login | Platform Service | REST |
 | Court CRUD + availability management | Platform Service | REST |
+| Holiday calendar management | Platform Service | REST |
 | Court verification (admin) | Platform Service | REST |
 | Stripe Connect onboarding | Platform Service | REST (redirect to Stripe) |
 | Booking calendar + confirm/reject | Transaction Service | REST |
@@ -141,6 +142,7 @@ NGINX Ingress routes requests by URL path prefix:
    /api/feature-flags/*
    /api/admin/*
    /api/support/*
+   /api/holidays/*
 ```
 
 Both services validate JWT tokens independently using a shared RS256 public key. NGINX performs initial token presence check; services do full signature verification, expiration, and role-based authorization.

@@ -30,6 +30,8 @@ tags:
     description: Court registration, management, and discovery
   - name: Availability
     description: Court availability windows and overrides
+  - name: Holidays
+    description: Holiday calendar management for court owners (national holidays, custom holidays, bulk application)
   - name: Weather
     description: Weather forecast integration
   - name: Favorites
@@ -68,6 +70,7 @@ tags:
     description: Security monitoring, abuse detection, and IP blocklist management (PLATFORM_ADMIN, SUPPORT_AGENT read-only)
   - name: Internal
     description: Internal service-to-service endpoints. Not exposed through NGINX Ingress. Authenticated via X-Internal-Api-Key (dev/test) or mTLS via Istio (staging/prod).
+
 
 security:
   - BearerAuth: []
@@ -786,6 +789,240 @@ paths:
       responses:
         '204':
           description: Override removed
+
+  # ─── Holidays ───────────────────────────────────────────────────────────────
+  /api/holidays/national:
+    get:
+      tags: [Holidays]
+      summary: List national holidays
+      description: Returns all pre-defined Greek national holidays with calculated dates for current and next 2 years.
+      operationId: getNationalHolidays
+      security: []
+      responses:
+        '200':
+          description: National holidays list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  holidays:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/NationalHoliday'
+
+  /api/holidays/custom:
+    get:
+      tags: [Holidays]
+      summary: List custom holidays
+      description: Returns all custom holidays created by the authenticated court owner.
+      operationId: getCustomHolidays
+      responses:
+        '200':
+          description: Custom holidays list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  holidays:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CustomHoliday'
+    post:
+      tags: [Holidays]
+      summary: Create custom holiday
+      description: Creates a new custom holiday for the authenticated court owner.
+      operationId: createCustomHoliday
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCustomHolidayRequest'
+      responses:
+        '201':
+          description: Custom holiday created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomHoliday'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          description: Holiday with same name already exists
+
+  /api/holidays/custom/{holidayId}:
+    put:
+      tags: [Holidays]
+      summary: Update custom holiday
+      operationId: updateCustomHoliday
+      parameters:
+        - name: holidayId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateCustomHolidayRequest'
+      responses:
+        '200':
+          description: Custom holiday updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomHoliday'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Holidays]
+      summary: Delete custom holiday
+      description: Deletes a custom holiday. Optionally removes related availability overrides.
+      operationId: deleteCustomHoliday
+      parameters:
+        - name: holidayId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: deleteOverrides
+          in: query
+          schema:
+            type: string
+            enum: [KEEP, DELETE_ALL, DELETE_FUTURE]
+            default: KEEP
+          description: What to do with existing availability overrides created from this holiday
+      responses:
+        '204':
+          description: Custom holiday deleted
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/holidays/apply:
+    post:
+      tags: [Holidays]
+      summary: Apply holidays to courts
+      description: |
+        Bulk operation to apply one or more holidays to selected courts.
+        Creates availability_override entries for each court and holiday combination.
+        Returns conflicts if existing bookings would be affected.
+      operationId: applyHolidays
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplyHolidaysRequest'
+      responses:
+        '200':
+          description: Holidays applied successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplyHolidaysResponse'
+        '207':
+          description: Partial success - some holidays applied, some had conflicts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplyHolidaysResponse'
+        '409':
+          description: Conflicts with existing bookings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HolidayConflictsResponse'
+
+  /api/holidays/calendar:
+    get:
+      tags: [Holidays]
+      summary: Get holiday calendar
+      description: Returns calendar data showing all holidays and blocked dates for the court owner's courts.
+      operationId: getHolidayCalendar
+      parameters:
+        - name: courtId
+          in: query
+          schema:
+            type: string
+            format: uuid
+          description: Filter by specific court (optional, defaults to all courts)
+        - name: fromDate
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: toDate
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Holiday calendar data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HolidayCalendarResponse'
+
+  /api/courts/{courtId}/holidays:
+    get:
+      tags: [Holidays]
+      summary: List holidays for a court
+      description: Returns all holidays applied to a specific court.
+      operationId: getCourtHolidays
+      parameters:
+        - $ref: '#/components/parameters/CourtId'
+        - name: year
+          in: query
+          schema:
+            type: integer
+          description: Filter by year (optional, defaults to current year)
+      responses:
+        '200':
+          description: Court holidays list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  holidays:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CourtHoliday'
+
+  /api/courts/{courtId}/holidays/{holidayId}:
+    delete:
+      tags: [Holidays]
+      summary: Remove holiday from court
+      description: Removes a holiday subscription from a specific court and optionally deletes related overrides.
+      operationId: removeCourtHoliday
+      parameters:
+        - $ref: '#/components/parameters/CourtId'
+        - name: holidayId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: deleteOverrides
+          in: query
+          schema:
+            type: string
+            enum: [KEEP, DELETE_ALL, DELETE_FUTURE]
+            default: DELETE_FUTURE
+      responses:
+        '204':
+          description: Holiday removed from court
+        '404':
+          $ref: '#/components/responses/NotFound'
 
   # ─── Weather ────────────────────────────────────────────────────────────────
   /api/weather:
@@ -3700,6 +3937,282 @@ components:
         reason:
           type: string
           description: Maintenance, holiday, private event, etc.
+        source:
+          type: string
+          enum: [MANUAL, HOLIDAY_NATIONAL, HOLIDAY_CUSTOM]
+          description: Origin of the override
+        holidayTemplateId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Reference to holiday template if created from a holiday
+
+    # ─── Holidays ───────────────────────────────────────────────────────────
+    NationalHoliday:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        nameEl:
+          type: string
+          description: Greek name
+        nameEn:
+          type: string
+          description: English name
+        datePattern:
+          type: string
+          description: "Date pattern (e.g., 'FIXED:12-25' or 'EASTER_OFFSET:-2')"
+        upcomingDates:
+          type: array
+          items:
+            type: object
+            properties:
+              year:
+                type: integer
+              date:
+                type: string
+                format: date
+          description: Calculated dates for current and next 2 years
+
+    CustomHoliday:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        nameEl:
+          type: string
+        nameEn:
+          type: string
+          nullable: true
+        datePattern:
+          type: string
+          description: "Date pattern (e.g., 'FIXED:08-15' for fixed annual, or specific date)"
+        isRecurring:
+          type: boolean
+          description: Whether this holiday repeats annually
+        isActive:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        appliedCourtsCount:
+          type: integer
+          description: Number of courts this holiday is applied to
+
+    CreateCustomHolidayRequest:
+      type: object
+      required: [nameEl, date]
+      properties:
+        nameEl:
+          type: string
+          maxLength: 255
+        nameEn:
+          type: string
+          maxLength: 255
+        date:
+          type: string
+          format: date
+          description: The holiday date (for recurring, this sets the month-day pattern)
+        startTime:
+          type: string
+          format: time
+          nullable: true
+          description: If null, blocks entire day
+        endTime:
+          type: string
+          format: time
+          nullable: true
+        isRecurring:
+          type: boolean
+          default: false
+          description: If true, holiday repeats annually on the same date
+
+    UpdateCustomHolidayRequest:
+      type: object
+      properties:
+        nameEl:
+          type: string
+          maxLength: 255
+        nameEn:
+          type: string
+          maxLength: 255
+        isActive:
+          type: boolean
+
+    ApplyHolidaysRequest:
+      type: object
+      required: [holidayIds, courtIds]
+      properties:
+        holidayIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: List of holiday template IDs to apply
+        courtIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: List of court IDs to apply holidays to
+        years:
+          type: array
+          items:
+            type: integer
+          description: Years to generate overrides for (default current year only)
+        autoRenew:
+          type: boolean
+          default: true
+          description: Automatically generate overrides for future years
+        conflictResolution:
+          type: string
+          enum: [SKIP, CANCEL_BOOKINGS, ABORT]
+          default: SKIP
+          description: How to handle conflicts with existing bookings
+
+    ApplyHolidaysResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        courtsAffected:
+          type: integer
+        holidaysApplied:
+          type: integer
+        overridesCreated:
+          type: integer
+        skippedDates:
+          type: array
+          items:
+            type: object
+            properties:
+              courtId:
+                type: string
+                format: uuid
+              date:
+                type: string
+                format: date
+              reason:
+                type: string
+        cancelledBookings:
+          type: array
+          items:
+            type: object
+            properties:
+              bookingId:
+                type: string
+                format: uuid
+              courtId:
+                type: string
+                format: uuid
+              date:
+                type: string
+                format: date
+              refundAmount:
+                type: integer
+
+    HolidayConflictsResponse:
+      type: object
+      properties:
+        conflicts:
+          type: array
+          items:
+            type: object
+            properties:
+              courtId:
+                type: string
+                format: uuid
+              courtName:
+                type: string
+              date:
+                type: string
+                format: date
+              holidayName:
+                type: string
+              existingBookings:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    bookingId:
+                      type: string
+                      format: uuid
+                    customerName:
+                      type: string
+                    startTime:
+                      type: string
+                      format: time
+                    endTime:
+                      type: string
+                      format: time
+                    amount:
+                      type: integer
+
+    HolidayCalendarResponse:
+      type: object
+      properties:
+        entries:
+          type: array
+          items:
+            type: object
+            properties:
+              date:
+                type: string
+                format: date
+              courts:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    courtId:
+                      type: string
+                      format: uuid
+                    courtName:
+                      type: string
+              holidayName:
+                type: string
+                nullable: true
+              source:
+                type: string
+                enum: [HOLIDAY_NATIONAL, HOLIDAY_CUSTOM, MANUAL]
+              isFullDay:
+                type: boolean
+              startTime:
+                type: string
+                format: time
+                nullable: true
+              endTime:
+                type: string
+                format: time
+                nullable: true
+              hasBookingConflicts:
+                type: boolean
+                description: True if there are existing bookings on this date
+
+    CourtHoliday:
+      type: object
+      properties:
+        holidayId:
+          type: string
+          format: uuid
+        holidayName:
+          type: string
+        source:
+          type: string
+          enum: [HOLIDAY_NATIONAL, HOLIDAY_CUSTOM]
+        dates:
+          type: array
+          items:
+            type: string
+            format: date
+          description: Dates this holiday blocks for this court
+        autoRenew:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
 
     # ─── Weather ────────────────────────────────────────────────────────────
     WeatherForecast:

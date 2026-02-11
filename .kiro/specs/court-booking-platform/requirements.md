@@ -781,6 +781,11 @@ graph TD
   - Manual date/time overrides for maintenance, holidays, private events
   - Visual calendar showing availability windows and existing bookings
   - **Bulk availability update:** apply schedule changes to multiple courts at once
+  - **Holiday Calendar:** dedicated interface for managing holidays (see Requirement 37)
+    - Pre-defined Greek national holidays (New Year, Easter, Christmas, etc.)
+    - Custom holidays with optional annual recurrence
+    - Bulk apply holidays across multiple courts
+    - Visual calendar showing all blocked dates with conflict detection
 - **Bulk Operations (Power-User):**
   - Select multiple courts → apply pricing changes, availability windows, or policy updates in one action
   - Bulk enable/disable courts (e.g., seasonal closure)
@@ -2850,3 +2855,133 @@ The existing `PLATFORM_ADMIN` role is extended with a `SUPPORT_AGENT` sub-role t
 5. THE Transaction_Service SHALL detect potential self-booking fraud by correlating: bookings where the customer's IP address matches the court owner's last known IP, bookings where the customer's device ID matches the court owner's device, or bookings where the customer account was created within 24 hours of the booking
 6. WHEN self-booking fraud is suspected, THE Transaction_Service SHALL generate a CRITICAL security alert and hold the payout for manual review by PLATFORM_ADMIN
 7. THE Platform_Service SHALL require re-verification of Stripe Connect identity when a court owner changes their bank account details, to prevent account takeover leading to payout redirection
+
+### Requirement 37: Holiday Calendar Management
+
+**User Story:** As a court owner, I want an easy way to block my courts for holidays without manually creating individual availability overrides for each date and court, so that I can efficiently manage seasonal closures and national holidays.
+
+#### Background
+
+Currently, court owners must manually create individual `availability_overrides` entries for each holiday, which is tedious and error-prone when managing multiple courts. This feature provides a streamlined interface for managing pre-defined national holidays (Greek holidays as primary), custom holidays, recurring annual holidays, and bulk application across multiple courts.
+
+#### Greek National Holidays (Pre-defined)
+
+The platform SHALL include the following Greek national holidays as pre-defined templates:
+
+| Holiday | Date Pattern | Type |
+|---------|--------------|------|
+| New Year's Day | January 1 | Fixed |
+| Epiphany | January 6 | Fixed |
+| Clean Monday | 48 days before Orthodox Easter | Moveable |
+| Independence Day | March 25 | Fixed |
+| Orthodox Good Friday | Friday before Orthodox Easter | Moveable |
+| Orthodox Easter Sunday | Calculated per Orthodox calendar | Moveable |
+| Orthodox Easter Monday | Day after Orthodox Easter | Moveable |
+| Labour Day | May 1 | Fixed |
+| Whit Monday (Holy Spirit Monday) | 50 days after Orthodox Easter | Moveable |
+| Assumption of Mary | August 15 | Fixed |
+| Ochi Day | October 28 | Fixed |
+| Christmas Day | December 25 | Fixed |
+| Second Day of Christmas | December 26 | Fixed |
+
+#### Acceptance Criteria
+
+**National Holiday Templates:**
+1. THE Platform_Service SHALL provide a pre-defined registry of Greek national holidays with their date patterns (fixed date or moveable based on Orthodox Easter calculation)
+2. THE Platform_Service SHALL calculate moveable holiday dates (Orthodox Easter-based) for the current year and up to 2 years in advance
+3. THE Admin_Portal SHALL display the national holiday list with upcoming dates when a court owner accesses the holiday management section
+4. THE Platform_Service SHALL allow PLATFORM_ADMIN to add, modify, or disable national holiday templates via an admin API
+
+**Bulk Holiday Application:**
+5. WHEN a court owner selects holidays to apply, THE Admin_Portal SHALL display a court selection interface showing all courts owned by that user
+6. THE Admin_Portal SHALL allow the court owner to select individual courts, select all courts, or filter courts by type (Tennis, Padel, Basketball, Football_5x5)
+7. WHEN a court owner confirms bulk holiday application, THE Platform_Service SHALL create `availability_overrides` entries for each selected court and holiday combination
+8. WHEN applying holidays in bulk, THE Platform_Service SHALL process all courts atomically — either all succeed or none are modified
+9. WHEN a bulk application completes successfully, THE Platform_Service SHALL return a summary showing the number of courts affected and holidays applied
+10. WHEN a bulk application encounters conflicts (existing bookings on holiday dates), THE Platform_Service SHALL report the conflicts and allow the court owner to choose: skip conflicting dates, cancel conflicting bookings (with full refund), or abort the entire operation
+
+**Custom Holidays:**
+11. THE Platform_Service SHALL allow court owners to create custom holidays with: name (bilingual: Greek and English), date or date range, time range (optional — NULL for full-day block), and recurrence pattern (none, annual fixed date, annual relative date)
+12. THE Platform_Service SHALL validate that custom holiday names are unique per court owner
+13. THE Platform_Service SHALL store custom holidays separately from national holidays, associated with the court owner's account
+14. WHEN a court owner views available holidays, THE Admin_Portal SHALL display both national holidays and their custom holidays
+15. THE Platform_Service SHALL allow court owners to edit or delete their custom holidays
+16. IF a custom holiday is deleted, THEN THE Platform_Service SHALL prompt whether to also remove existing `availability_overrides` entries created from that holiday
+
+**Recurring Annual Holidays:**
+17. WHEN a court owner applies a recurring holiday, THE Platform_Service SHALL create `availability_overrides` entries for the current year and optionally for future years up to a configurable horizon (default: 2 years ahead)
+18. THE Platform_Service SHALL support two recurrence patterns: fixed date (same date every year, e.g., December 25) and relative date (calculated based on rules, e.g., Orthodox Easter)
+19. WHEN a new year begins, THE Platform_Service SHALL have a scheduled job that generates holiday instances for the new year based on active recurring holiday subscriptions
+20. THE Platform_Service SHALL notify court owners when new recurring holiday instances are automatically created for the upcoming year
+21. THE Platform_Service SHALL allow court owners to opt-out of automatic recurrence for specific holidays while keeping others active
+22. WHEN a recurring holiday is modified, THE Platform_Service SHALL prompt whether to update only future instances or leave existing instances unchanged
+23. THE Platform_Service SHALL track which `availability_overrides` entries were created from recurring holidays to enable bulk updates or deletions
+
+**Holiday Calendar View:**
+24. WHEN a court owner accesses the holiday calendar, THE Admin_Portal SHALL display a monthly calendar view with visual indicators for blocked dates
+25. THE Admin_Portal SHALL differentiate between national holidays, custom holidays, and manual availability overrides using distinct visual styles (colors or icons)
+26. WHEN a court owner has multiple courts, THE Admin_Portal SHALL allow filtering the calendar view by individual court or viewing all courts aggregated
+27. WHEN a court owner clicks on a blocked date, THE Admin_Portal SHALL display details including: holiday name, affected courts, time range (full day or specific hours), and source (national, custom, or manual override)
+28. THE Admin_Portal SHALL provide a list view alternative to the calendar showing all upcoming holidays sorted by date
+29. WHEN viewing the calendar, THE Admin_Portal SHALL allow navigation between months and years
+30. THE Admin_Portal SHALL highlight dates with existing customer bookings when viewing the holiday calendar to help court owners avoid conflicts
+31. WHEN a court owner views a holiday, THE Admin_Portal SHALL provide quick actions to edit, delete, or extend the holiday to additional courts
+
+**Integration with Existing Availability System:**
+32. WHEN a holiday is applied to a court, THE Platform_Service SHALL create entries in the `availability_overrides` table with the holiday name as the `reason` field
+33. THE Platform_Service SHALL set `start_time` and `end_time` to NULL for full-day holiday blocks, consistent with existing `availability_override` behavior
+34. WHEN checking court availability, THE existing availability logic SHALL treat holiday-created overrides identically to manually-created overrides
+35. THE Platform_Service SHALL add a `source` column to `availability_overrides` to distinguish holiday-generated entries (`HOLIDAY_NATIONAL`, `HOLIDAY_CUSTOM`) from manual entries (`MANUAL`)
+36. WHEN a holiday-generated override is manually edited, THE Platform_Service SHALL mark it as `source: MANUAL` and exclude it from bulk holiday updates
+37. IF a court owner deletes a holiday, THEN THE Platform_Service SHALL offer options to: keep existing overrides, delete all related overrides, or delete only future overrides
+38. THE Platform_Service SHALL prevent duplicate `availability_override` entries for the same court, date, and time range
+
+**Conflict Handling with Existing Bookings:**
+39. WHEN a court owner attempts to apply a holiday that conflicts with existing confirmed bookings, THE Platform_Service SHALL display the list of conflicting bookings with customer names, dates, and amounts
+40. THE Platform_Service SHALL offer conflict resolution options: skip the conflicting dates (apply holiday to non-conflicting dates only), cancel the conflicting bookings with full refund (court-owner-initiated cancellation), or abort the holiday application entirely
+41. WHEN bookings are cancelled due to holiday application, THE Transaction_Service SHALL process full refunds and send notifications to affected customers explaining the cancellation reason
+42. THE Platform_Service SHALL NOT allow holiday application to dates with bookings in PENDING_CONFIRMATION status without first resolving those bookings (confirm or reject)
+
+**Notifications:**
+43. WHEN a court owner applies holidays that affect future bookings, THE Platform_Service SHALL send notifications to affected customers listing the cancelled bookings and refund amounts
+44. WHEN recurring holidays are automatically generated for a new year, THE Platform_Service SHALL send a summary notification to the court owner listing all generated holiday dates
+45. THE Platform_Service SHALL send a reminder notification to court owners 30 days before major holidays (Christmas, Easter, August 15) suggesting they review their holiday settings
+
+**API Endpoints:**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/holidays/national` | List all national holiday templates with dates for current and next 2 years |
+| GET | `/api/holidays/custom` | List court owner's custom holidays |
+| POST | `/api/holidays/custom` | Create a custom holiday |
+| PUT | `/api/holidays/custom/{holidayId}` | Update a custom holiday |
+| DELETE | `/api/holidays/custom/{holidayId}` | Delete a custom holiday |
+| POST | `/api/holidays/apply` | Apply holidays to selected courts (bulk operation) |
+| GET | `/api/holidays/calendar` | Get holiday calendar data for court owner's courts |
+| GET | `/api/courts/{courtId}/holidays` | List holidays applied to a specific court |
+| DELETE | `/api/courts/{courtId}/holidays/{holidayId}` | Remove a holiday from a specific court |
+
+**Database Changes:**
+
+The `availability_overrides` table SHALL be extended with:
+- `source` column: `VARCHAR(20)` with values `MANUAL`, `HOLIDAY_NATIONAL`, `HOLIDAY_CUSTOM`
+- `holiday_template_id` column: `UUID` nullable, references the holiday template that created this override
+
+New table `holiday_templates`:
+- `id`: UUID primary key
+- `owner_id`: UUID nullable (NULL for national holidays, court_owner_id for custom)
+- `name_el`: VARCHAR(255) Greek name
+- `name_en`: VARCHAR(255) English name
+- `date_pattern`: VARCHAR(50) e.g., "FIXED:12-25" or "EASTER_OFFSET:-2"
+- `is_national`: BOOLEAN
+- `is_active`: BOOLEAN
+- `created_at`: TIMESTAMPTZ
+- `updated_at`: TIMESTAMPTZ
+
+New table `court_holiday_subscriptions`:
+- `id`: UUID primary key
+- `court_id`: UUID references courts
+- `holiday_template_id`: UUID references holiday_templates
+- `auto_renew`: BOOLEAN (generate for future years automatically)
+- `created_at`: TIMESTAMPTZ
+
