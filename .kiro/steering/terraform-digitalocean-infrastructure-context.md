@@ -995,94 +995,62 @@ resource "helm_release" "prometheus" {
 
 ## 10. CI/CD Pipeline Pattern (GitHub Actions)
 
-### Terraform Plan on PR
+> **Full reference**: See `docs/github-actions-terraform-pipeline.md` for complete workflow files.
 
-```yaml
-# .github/workflows/terraform-shared.yml
-name: "Terraform Shared Environment"
+### Pipeline Flow
 
-on:
-  pull_request:
-    paths:
-      - 'environments/shared/**'
-      - 'modules/**'
-  push:
-    branches: [main]
-    paths:
-      - 'environments/shared/**'
-      - 'modules/**'
-
-env:
-  TF_VERSION: "1.9.0"
-  WORKING_DIR: "environments/shared"
-
-jobs:
-  plan:
-    name: "Terraform Plan"
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    steps:
-      - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ env.TF_VERSION }}
-
-      - name: Terraform Init
-        run: terraform init
-        working-directory: ${{ env.WORKING_DIR }}
-
-      - name: Terraform Validate
-        run: terraform validate
-        working-directory: ${{ env.WORKING_DIR }}
-
-      - name: Terraform Plan
-        id: plan
-        run: terraform plan -no-color -out=tfplan
-        working-directory: ${{ env.WORKING_DIR }}
-
-      - name: Post Plan to PR
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const output = `#### Terraform Plan 📖
-            \`\`\`
-            ${{ steps.plan.outputs.stdout }}
-            \`\`\`
-            *Pushed by: @${{ github.actor }}*`;
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: output
-            })
-
-  apply:
-    name: "Terraform Apply"
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    environment: shared  # Requires manual approval for production
-    steps:
-      - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ env.TF_VERSION }}
-
-      - name: Terraform Init
-        run: terraform init
-        working-directory: ${{ env.WORKING_DIR }}
-
-      - name: Terraform Apply
-        run: terraform apply -auto-approve
-        working-directory: ${{ env.WORKING_DIR }}
+```
+PR Opens → Plan All Envs → [Manual Gate] → Deploy Dev (PR preview)
+PR Merged → Plan Test → Auto-Deploy Test → Plan Staging → [Manual Gate] → Deploy Staging → Plan Prod → [Manual Gate] → Deploy Prod
 ```
 
-### Production Requires Manual Approval
+### Key Principles
+
+1. **Plan all envs on PR**: Visibility into impact across environments before merge
+2. **Manual gate for dev**: Prevents multiple PRs from overwriting each other; dev is a "preview" environment
+3. **Re-plan before each deployment**: State can drift; fresh plans ensure accuracy
+4. **Auto-deploy to test**: Fast feedback loop after merge
+5. **Manual gates for staging/prod**: Safety for production-like environments
+
+### GitHub Environments Required
+
+| Environment | Protection Rules |
+|-------------|------------------|
+| `dev` | Required reviewers (optional) |
+| `test` | None (auto-deploy) |
+| `staging` | Required reviewers |
+| `production` | Required reviewers, deployment branches (main only) |
+
+### Workflow Files
+
+- `.github/workflows/terraform-pr.yml` — PR workflow (plan all + manual dev deploy)
+- `.github/workflows/terraform-deploy.yml` — Merge workflow (test → staging → prod)
+
+### Plan Artifact Pattern
+
+Always save and reuse plan artifacts to ensure the exact changes reviewed are applied:
 
 ```yaml
-# .github/workflows/terraform-production.yml
-# Same structure but with:
-#   environment: production  (requires manual approval in GitHub settings)
-#   paths filter: 'environments/production/**'
+- name: Terraform Plan
+  run: terraform plan -no-color -out=tfplan
+  working-directory: environments/shared
+
+- name: Upload Plan Artifact
+  uses: actions/upload-artifact@v4
+  with:
+    name: tfplan-shared
+    path: environments/shared/tfplan
+
+# In deploy job:
+- name: Download Plan Artifact
+  uses: actions/download-artifact@v4
+  with:
+    name: tfplan-shared
+    path: environments/shared
+
+- name: Terraform Apply
+  run: terraform apply -auto-approve tfplan
+  working-directory: environments/shared
 ```
 
 ## 11. Security Best Practices
