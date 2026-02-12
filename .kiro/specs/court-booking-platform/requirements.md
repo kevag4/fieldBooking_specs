@@ -28,7 +28,7 @@ graph TB
         DOPG[(Managed PostgreSQL<br/>with PostGIS<br/>Primary + Read Replica)]
         DOREDIS[(Managed Redis 2GB<br/>Cache, Waitlists<br/>WebSocket Pub/Sub)]
         SPACES[Spaces<br/>S3-Compatible<br/>Court Images & Assets]
-        KAFKA[Upstash Kafka<br/>Serverless<br/>Event Streaming]
+        KAFKA[Redpanda Serverless<br/>Kafka-Compatible<br/>Event Streaming]
     end
     
     subgraph "External Services"
@@ -172,7 +172,7 @@ graph TB
 - **Container Registry**: Private Docker image storage (5GB included)
 
 **Event Streaming**
-- **Upstash Kafka**: Serverless Kafka for MVP (pay-per-message, ~$10-30/month, zero operational overhead)
+- **Redpanda Serverless**: Kafka-compatible serverless streaming platform with native Kafka protocol (lower latency than HTTP-based alternatives), pay-as-you-go pricing, 99.9% SLA, $100 free trial credits for 14 days
 - Migration path to self-hosted Strimzi Kafka on Kubernetes when event volume justifies operational cost
 
 **Networking & Security**
@@ -221,7 +221,7 @@ graph TB
 - Platform Service → OAuth Providers (authentication)
 - Platform Service → Weather API (forecast data)
 
-**Asynchronous (Kafka Events via Upstash)**
+**Asynchronous (Kafka Events via Redpanda Serverless)**
 - Booking events: Transaction Service → Platform Service (cache invalidation, availability updates)
 - Notification events: Transaction Service → FCM/SendGrid (push notifications, emails)
 - Analytics events: Both services → Analytics processors
@@ -232,7 +232,7 @@ graph TB
   - `booking-events` topic: partitioned by `courtId` to guarantee ordering per court (ensures availability updates are processed in sequence)
   - `notification-events` topic: partitioned by `userId` to guarantee notification ordering per user
   - `analytics-events` topic: partitioned by `courtId` for court-level aggregation
-- **Latency Expectations**: Upstash Kafka operates over HTTPS, adding ~50-100ms latency per message compared to self-hosted. Availability updates should propagate to connected clients within 2 seconds of booking completion (see Requirement 19, criterion 11). If latency exceeds this threshold consistently, migrate to self-hosted Strimzi Kafka on Kubernetes.
+- **Latency Expectations**: Redpanda Serverless uses native Kafka protocol with lower latency than HTTP-based alternatives. Availability updates should propagate to connected clients within 2 seconds of booking completion (see Requirement 19, criterion 11). If latency exceeds this threshold consistently, migrate to self-hosted Strimzi Kafka on Kubernetes.
 
 **Real-time (WebSocket - Managed by Transaction Service, backed by Redis Pub/Sub)**
 - Availability updates: Transaction Service → Connected clients (triggered by booking events)
@@ -2775,7 +2775,7 @@ The existing `PLATFORM_ADMIN` role is extended with a `SUPPORT_AGENT` sub-role t
 5. ALL client-to-server communication SHALL use TLS 1.2 or higher — TLS 1.0 and 1.1 SHALL be disabled at the NGINX Ingress level
 6. ALL service-to-service communication SHALL use mTLS (via Istio in staging/production) or TLS (in dev/test)
 7. ALL connections to managed services (PostgreSQL, Redis, Kafka) SHALL use TLS/SSL
-8. THE Upstash Kafka connection SHALL use SASL/SSL authentication
+8. THE Redpanda Serverless connection SHALL use SASL/SCRAM authentication with TLS
 
 **Data Classification:**
 

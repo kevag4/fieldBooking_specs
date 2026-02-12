@@ -1058,7 +1058,7 @@ When implementing a specific feature, consult the appropriate reference:
 | Container Registry | ECR / GCR | DigitalOcean Container Registry |
 | Managed Database | RDS / Cloud SQL | DigitalOcean Managed PostgreSQL + PostGIS |
 | Managed Cache | ElastiCache / Memorystore | DigitalOcean Managed Redis |
-| Event Streaming | Amazon MSK / Pub/Sub | Upstash Kafka (serverless, HTTPS-based) |
+| Event Streaming | Amazon MSK / Pub/Sub | Redpanda Serverless (Kafka-compatible, native protocol) |
 | Infrastructure as Code | CloudFormation / Deployment Manager | Terraform with DigitalOcean provider |
 | CI/CD | CodePipeline / Cloud Build | GitHub Actions |
 | Secrets Management | AWS Secrets Manager / GCP Secret Manager | External Secrets Operator → Sealed Secrets (MVP) |
@@ -1086,7 +1086,7 @@ spring:
   redis:
     host: ${DO_REDIS_HOST}
   kafka:
-    bootstrap-servers: ${UPSTASH_KAFKA_BOOTSTRAP}
+    bootstrap-servers: ${REDPANDA_BOOTSTRAP_SERVERS}
     properties:
       security.protocol: SASL_SSL
       sasl.mechanism: SCRAM-SHA-256
@@ -1101,7 +1101,7 @@ spring:
   redis:
     host: ${DO_REDIS_HOST}
   kafka:
-    bootstrap-servers: ${UPSTASH_KAFKA_BOOTSTRAP}
+    bootstrap-servers: ${REDPANDA_BOOTSTRAP_SERVERS}
     properties:
       security.protocol: SASL_SSL
       sasl.mechanism: SCRAM-SHA-256

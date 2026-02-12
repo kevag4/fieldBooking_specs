@@ -32,7 +32,7 @@ openapi-generator generate -i openapi-transaction-service.yaml -g typescript-fet
 
 ## Kafka Event Contracts
 
-`kafka-event-contracts.json` defines the async event schemas exchanged between services via Upstash Kafka.
+`kafka-event-contracts.json` defines the async event schemas exchanged between services via Redpanda Serverless (Kafka-compatible).
 
 ### Topics
 

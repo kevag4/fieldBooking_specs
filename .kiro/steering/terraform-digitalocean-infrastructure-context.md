@@ -1290,16 +1290,24 @@ repos:
 
 Some services in the court-booking platform are managed outside of Terraform:
 
-### Upstash Kafka (Serverless)
+### Redpanda Serverless (Kafka-Compatible)
 
-Upstash Kafka is provisioned via the Upstash console or API, not Terraform. The platform uses Upstash for event streaming due to its serverless nature and zero-ops requirements for MVP.
+Redpanda Serverless is provisioned via the Redpanda Cloud console, not Terraform. The platform uses Redpanda for event streaming due to its Kafka compatibility, native protocol (lower latency than HTTP-based alternatives), and serverless pricing model.
 
 **Configuration approach:**
-- Create Kafka cluster and topics via Upstash dashboard
+- Create Kafka cluster and topics via Redpanda Cloud dashboard (https://cloud.redpanda.com)
 - Store connection credentials in GitHub Secrets or DigitalOcean App Platform secrets
 - Inject into Kubernetes as `Secret` resources via Helm values or Kustomize
 
-**Required topics (create manually in Upstash):**
+**Redpanda Serverless Features:**
+- Native Kafka protocol (no HTTP overhead)
+- 100 MB/s max write throughput, 300 MB/s max read throughput
+- Up to 5,000 partitions
+- 99.9% SLA
+- SASL/SCRAM authentication with TLS
+- $100 free trial credits for 14 days
+
+**Required topics (create in Redpanda Cloud console):**
 | Topic | Partitions | Retention |
 |-------|------------|-----------|
 | `booking-events` | 3 | 7 days |
@@ -1313,14 +1321,14 @@ Upstash Kafka is provisioned via the Upstash console or API, not Terraform. The 
 **Environment variables for services:**
 ```yaml
 # Injected via Kubernetes Secret
-KAFKA_BOOTSTRAP_SERVERS: "xxx.upstash.io:9092"
-KAFKA_SASL_USERNAME: "from-upstash-dashboard"
-KAFKA_SASL_PASSWORD: "from-upstash-dashboard"
+KAFKA_BOOTSTRAP_SERVERS: "xxx.cloud.redpanda.com:9092"
+KAFKA_SASL_USERNAME: "from-redpanda-dashboard"
+KAFKA_SASL_PASSWORD: "from-redpanda-dashboard"
 KAFKA_SECURITY_PROTOCOL: "SASL_SSL"
 KAFKA_SASL_MECHANISM: "SCRAM-SHA-256"
 ```
 
-**Migration note:** If Upstash proves insufficient (see latency thresholds in system-design.md), migrate to Strimzi on DOKS. Terraform modules for Strimzi would be added at that time.
+**Migration note:** If Redpanda Serverless proves insufficient (see latency thresholds in system-design.md), migrate to Strimzi on DOKS. Terraform modules for Strimzi would be added at that time.
 
 ### External APIs (Credentials Only)
 
@@ -1483,7 +1491,7 @@ Terraform does NOT store secrets. Secrets flow through CI/CD environment variabl
 | `SENDGRID_API_KEY` | K8s Secret | SendGrid API key |
 | `FCM_SERVICE_ACCOUNT` | K8s Secret | Firebase service account JSON |
 | `OPENWEATHERMAP_API_KEY` | K8s Secret | Weather API key |
-| `KAFKA_SASL_PASSWORD` | K8s Secret | Upstash Kafka password |
+| `KAFKA_SASL_PASSWORD` | K8s Secret | Redpanda Serverless password |
 | `JWT_PRIVATE_KEY` | K8s Secret | RS256 private key for signing |
 | `JWT_PUBLIC_KEY` | K8s Secret | RS256 public key for verification |
 | `INTERNAL_API_KEY` | K8s Secret | Service-to-service auth (dev/test) |

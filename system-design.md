@@ -58,8 +58,8 @@ The Court Booking Platform is a multi-tenant sports court reservation system ser
 │                      DATA LAYER                                     │
 │                                                                     │
 │   ┌──────────────┐  ┌────────┐  ┌──────────┐  ┌────────────────┐  │
-│   │ PostgreSQL    │  │ Redis  │  │ Upstash  │  │ DO Spaces      │  │
-│   │ + PostGIS     │  │ 2GB    │  │ Kafka    │  │ (S3-compat)    │  │
+│   │ PostgreSQL    │  │ Redis  │  │ Redpanda │  │ DO Spaces      │  │
+│   │ + PostGIS     │  │ 2GB    │  │Serverless│  │ (S3-compat)    │  │
 │   │               │  │        │  │          │  │                │  │
 │   │ • platform    │  │ Cache  │  │ 7 topics │  │ Court images   │  │
 │   │   schema      │  │ Queues │  │ 21 event │  │ Attachments    │  │
@@ -258,7 +258,7 @@ Every Kafka message value follows a common envelope schema:
 }
 ```
 
-- `eventId` enables consumer-side deduplication (at-least-once delivery with Upstash Kafka)
+- `eventId` enables consumer-side deduplication (at-least-once delivery with Redpanda Serverless)
 - `traceId` / `spanId` enable end-to-end distributed tracing across async boundaries
 - `correlationId` links related events (e.g., a booking cancellation → waitlist slot freed → notification)
 
@@ -284,30 +284,45 @@ The end-to-end availability propagation chain must complete within 2 seconds:
 
 | Step | Target | Notes |
 |------|--------|-------|
-| Transaction Service → Kafka produce | ≤ 150ms | Upstash Kafka HTTPS produce |
-| Kafka → Platform Service consume | ≤ 200ms | Upstash Kafka HTTPS poll interval |
+| Transaction Service → Kafka produce | ≤ 100ms | Redpanda Serverless (native Kafka protocol) |
+| Kafka → Platform Service consume | ≤ 150ms | Redpanda Serverless poll interval |
 | Redis cache invalidation | ≤ 50ms | Managed Redis, same VPC |
 | WebSocket broadcast via Redis Pub/Sub | ≤ 100ms | Pod-to-pod via Redis |
-| **Total budget** | **≤ 500ms typical, ≤ 1.5s p95** | 500ms headroom for spikes |
+| **Total budget** | **≤ 400ms typical, ≤ 1.2s p95** | 800ms headroom for spikes |
 
 **Monitoring:**
 - `availability_update_latency_seconds` histogram metric (measured from Kafka event timestamp to WebSocket broadcast)
-- `kafka_produce_latency_seconds` histogram (Upstash HTTPS produce time)
+- `kafka_produce_latency_seconds` histogram (Redpanda produce time)
 - `kafka_consume_lag_seconds` gauge (consumer lag per partition)
-- Grafana alert at p95 > 1.5s
+- Grafana alert at p95 > 1.2s
+
+**Redpanda Serverless Details:**
+
+Redpanda Serverless is a fully-managed, Kafka-compatible streaming platform with pay-as-you-go pricing. Key characteristics:
+
+| Feature | Specification |
+|---------|---------------|
+| Protocol | Native Kafka API (no HTTP overhead) |
+| Max write throughput | 100 MB/s |
+| Max read throughput | 300 MB/s |
+| Max partitions | 5,000 |
+| SLA | 99.9% |
+| Networking | Public or AWS PrivateLink |
+| Authentication | SASL/SCRAM, ACLs |
+| Free trial | $100 credits for 14 days |
 
 **Strimzi Migration Criteria:**
 
-If Upstash Kafka proves insufficient, migrate to Strimzi (self-hosted Kafka on DOKS). Trigger migration when ANY of these conditions persist for 7+ consecutive days:
+If Redpanda Serverless proves insufficient, migrate to Strimzi (self-hosted Kafka on DOKS). Trigger migration when ANY of these conditions persist for 7+ consecutive days:
 
 | Metric | Threshold | Rationale |
 |--------|-----------|-----------|
-| `availability_update_latency_seconds` p95 | > 1.5s | SLA breach risk |
+| `availability_update_latency_seconds` p95 | > 1.2s | SLA breach risk |
 | `availability_update_latency_seconds` p99 | > 2.0s | Hard SLA violation |
-| `kafka_produce_latency_seconds` p95 | > 300ms | Upstash HTTPS overhead |
+| `kafka_produce_latency_seconds` p95 | > 200ms | Latency concern |
 | `kafka_consume_lag_seconds` | > 5s sustained | Consumer falling behind |
-| Upstash monthly cost | > €150/month | Cost parity with self-hosted |
-| Upstash availability | < 99.9% monthly | Reliability concern |
+| Redpanda monthly cost | > €150/month | Cost parity with self-hosted |
+| Redpanda availability | < 99.9% monthly | Reliability concern |
 
 **Migration Runbook:** See `infrastructure/docs/kafka-migration-runbook.md` (to be created in Phase 1).
 
@@ -578,7 +593,7 @@ Shared PostgreSQL instance, separate schemas with strict write boundaries:
 │  │ + replica    │  │        │  │          │  │              │ │
 │  └──────────────┘  └────────┘  └──────────┘  └──────────────┘ │
 │                                                                  │
-│  Upstash Kafka (serverless, external)                           │
+│  Redpanda Serverless (external, Kafka-compatible)               │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -644,7 +659,7 @@ Developer ──► GitHub PR ──► GitHub Actions Pipeline:
 |----------|--------|-----------|
 | Cloud provider | DigitalOcean | Cost-effective for MVP, managed K8s/PG/Redis |
 | Service split | 2 services (Platform + Transaction) | Clear domain boundaries, independent scaling |
-| Event streaming | Upstash Kafka (serverless) | Zero ops for MVP, migration path to Strimzi |
+| Event streaming | Redpanda Serverless | Kafka-compatible, native protocol (lower latency than HTTP-based alternatives), pay-as-you-go, 99.9% SLA, migration path to Strimzi |
 | Payments | Stripe Connect Express | Marketplace payouts, hosted onboarding |
 | Mobile framework | Flutter | Single codebase for iOS, Android, Web |
 | Admin framework | React | Rich ecosystem, TypeScript support |
